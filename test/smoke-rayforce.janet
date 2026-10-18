@@ -162,7 +162,7 @@
   (spit script code)
   (def rc (os/execute ["/bin/sh" "-c"
                        (string "JANET_PATH="
-                               (or (get (os/environ) "JANET_PATH") "modules:tests/lib")
+                               (or (get (os/environ) "JANET_PATH") ".")
                                " janet " script " > " out " 2>&1")]))
   (def msg (string/trim (string (slurp out))))
   (when (os/stat out) (os/rm out))
