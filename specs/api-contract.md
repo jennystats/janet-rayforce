@@ -265,9 +265,9 @@ The binding's ownership rule is a checked protocol, not prose:
 
 v1.0, 2026-10-16. Sections above are the v1 contract; changes land as
 versioned addenda with a change line naming the section and the
-evidence. The surface follows the janet-rayql boundary:
+evidence. The surface follows the janet-query boundary:
 this module exposes the raw plan plane - no convenience wrappers; if
-a compositional need appears, it belongs in janet-rayql, and if an
+a compositional need appears, it belongs in janet-query, and if an
 expression opcode this module lacks is needed there, it lands HERE as
 an evidence-cited slice.
 
@@ -441,7 +441,7 @@ shape).
 
 Coverage notes: multi-batch parquet at
 the 65536 row-group crossing is untested at scale - a planned slice
-note for janet-rayql's read paths; the C cost baseline (~1 us/row
+note for janet-query's read paths; the C cost baseline (~1 us/row
 end-to-end, informational) is not contract.
 
 ### A8. Provenance and plan-build fixes (2026-10-17)

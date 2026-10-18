@@ -21,8 +21,8 @@
 # Pinned C ABI: RayforceDB/rayforce v2.11.5 (tarball sha256 in
 # libs/install-rayforce.sh, which also cross-checks the four
 # vendored headers before every build). This is a raw plan-plane
-# binding - no convenience wrappers (the janet-rayql boundary);
-# no rayql features.
+# binding - no convenience wrappers (the janet-query boundary);
+# no query-layer features.
 #
 # Lib resolution: $RAYFORCE_LIB -> ~/.local/lib/rayforce/librayforce.so
 # -> dlopen search. Import fails actionably if none loads.
@@ -63,7 +63,7 @@
 (put (curenv) :doc
      "Typed-contract Janet binding over the Rayforce columnar engine
   (core ffi, not a native module). Raw plan-plane surface - the
-  compositional layer belongs to janet-rayql. EMBEDDING STATEMENT:
+  compositional layer belongs to janet-query. EMBEDDING STATEMENT:
   this module embeds the FULL Rayforce engine - the Rayfall string
   evaluator is present in the binary (the DAG executor evaluates its
   expression arguments through it; it cannot be removed by build or
@@ -699,7 +699,7 @@
 
 #==------------------------------------------------------------------------==#
 # Plan plane (contract section 1 - the raw plan surface,
-# no convenience wrappers, no rayql features)
+# no convenience wrappers, no query-layer features)
 #==------------------------------------------------------------------------==#
 
 (def AGG-OPS {:sum 50 :avg 55 :min 52 :max 53 :count 54
