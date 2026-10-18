@@ -224,7 +224,7 @@
 
 (defn/typed err! {:args [:any :string] :ret :any} [p what]
   "THE error-object rule (contract section 3), implemented once for
-  every error-returning census call: a ray_t* whose RAY_IS_ERR marker
+  every error-returning engine call: a ray_t* whose RAY_IS_ERR marker
   is set (the type tag reads RAY_ERROR - the header's from_obj
   parenthetical is wrong, it maps codes and returns RAY_ERR_DOMAIN
   for every NON-error) gets its ASCII code
@@ -927,7 +927,7 @@
 (defn/typed group {:args [:any :any :any] :ret :any} [g group-keys aggs]
   "The group-by structural op: group-keys is an array of same-graph
   column ops; aggs is an array of [input-op agg-keyword] pairs (the
-  census   v1 agg set: :sum :avg :min :max :count :count-distinct :first
+  v1 agg set: :sum :avg :min :max :count :count-distinct :first
   :last :stddev :var). (The parameter is named group-keys: a `keys`
   param shadowed the core fn and leaked a raw janet error from the
   unknown-agg guard - addendum A7.8.)"
