@@ -126,17 +126,16 @@
 # Deferred types (loud failure)
 #==------------------------------------------------------------------------==#
 
-# STR/SYM input columns raise the deferred class.
+# WRITE-side STR/SYM input columns raise the deferred class
+# (the decode side reads STR - the C9 cells below, v0.1.1 A13).
 (assert-raises (fn [] (rayforce/table-from-columns @{:s @["x" "y"]}))
                "unsupported column type: STR - deferred"
                "STR input")
 (assert-raises (fn [] (rayforce/table-from-columns @{:s @[:a :b]}))
                "unsupported column type: SYM - deferred"
                "SYM input")
-# STR parquet column - same class on the read path.
-(assert-raises (fn [] (rayforce/parquet-rows (string DIR "/str.parquet")))
-               "unsupported column type: STR - deferred"
-               "STR parquet")
+# STR parquet columns decode on the read path (v0.1.1 A13):
+# the C9 cells below cover the decode surface.
 
 #==------------------------------------------------------------------------==#
 # Parquet rejection
@@ -917,4 +916,150 @@
         @{:a @[1.0 2.0] :b @[3.0 4.0] :c @["x" "y"]}) ([e] e)))
   "third-column element failure nets 0")
 
+# C9: STR parquet columns DECODE (v0.1.1, addendum A13): values are
+# janet strings, byte-exact and order-preserving (inline short,
+# pooled long, non-ASCII UTF-8, repeated values - the fixture is
+# PLAIN-encoded; dictionary encoding remains an A5 rejection,
+# STR does not lift it). The empty text in the fixture decodes as
+# nil: the upstream native-null collision (empty text -> null on
+# read, rayforcedb storage docs) stated as A13's documented
+# divergence from duckdb empty-string semantics.
+(def c9-batches (rayforce/parquet-rows (string DIR "/str.parquet")))
+(assert-eq 1 (length c9-batches) "C9 one batch")
+(def c9-t (first c9-batches))
+(def c9-cols (rayforce/table-columns c9-t))
+(assert-eq @[1 2 3 4 5 6] (c9-cols "id") "C9 ids exact")
+(assert-eq
+  @[nil "x" "a long string well past twelve bytes"
+    "\xC3\xBCn\xC3\xAFcod\xC3\xA9 \xE2\x80\x94 text" "x" "aaa bbb ccc"]
+  (c9-cols "s")
+  "C9 STR round-trip exact + empty-text -> nil divergence")
+(assert-eq nil (rayforce/table-column c9-t "s0") "C9 missing column nil")
+(:close c9-t)
+
+# C9b: group-by-string-key (the load-bearing cell): the engine groups
+# on its native STR representation; the module decodes group keys
+# like any other column. Hand-computed: "x" appears twice (ids 2,5),
+# every other key once; the empty-text null groups as nil.
+(def c9b-t (first (rayforce/parquet-rows (string DIR "/str.parquet"))))
+(def c9b-g (rayforce/graph c9b-t))
+(def c9b-s (rayforce/scan c9b-g "s"))
+(def c9b-id (rayforce/scan c9b-g "id"))
+(def c9b-res (rayforce/execute c9b-g
+                (rayforce/group c9b-g [c9b-s] [[c9b-id :count]])))
+(assert-eq
+  {"s" @[nil "x" "a long string well past twelve bytes"
+         "\xC3\xBCn\xC3\xAFcod\xC3\xA9 \xE2\x80\x94 text" "aaa bbb ccc"]
+   "id_count" @[1 2 1 1 1]}
+  (rayforce/table-columns c9b-res)
+  "C9b group-by-string-key hand-computed")
+(:close c9b-res) (:close c9b-g) (:close c9b-t)
+
+# C9c: a STR column through filter + select to the result wrapper: the
+# reachable string predicate is isnull (the engine's like/ilike/
+# strlen/substr/upper/lower/concat/str_find DAG constructors are NOT
+# bound by this module - A13 records the boundary).
+(def c9c-t (first (rayforce/parquet-rows (string DIR "/str.parquet"))))
+(def c9c-g (rayforce/graph c9c-t))
+(def c9c-ct (rayforce/const-table c9c-g c9c-t))
+(def c9c-s (rayforce/scan c9c-g "s"))
+(def c9c-res (rayforce/execute c9c-g
+                (rayforce/filter c9c-g c9c-ct
+                  (rayforce/isnull c9c-g c9c-s))))
+(assert-eq {"id" @[1] "s" @[nil]} (rayforce/table-columns c9c-res)
+            "C9c filter isnull on STR")
+(:close c9c-res) (:close c9c-g) (:close c9c-t)
+
+# C9d: join on a string key (cross-table, both key sides STR - the
+# A7 join-key fence passes same-type): hand-computed matches - "x"
+# twice (ids 2,5 -> v 10,10), "aaa bbb ccc" once (id 6 -> v 20).
+(def c9d-t (first (rayforce/parquet-rows (string DIR "/str.parquet"))))
+(def c9d-t2 (first (rayforce/parquet-rows (string DIR "/str-join.parquet"))))
+(def c9d-g (rayforce/graph c9d-t))
+(def c9d-tid (rayforce/add-table c9d-g c9d-t2))
+(def c9d-ct (rayforce/const-table c9d-g c9d-t))
+(def c9d-ct2 (rayforce/const-table c9d-g c9d-t2))
+(def c9d-s (rayforce/scan c9d-g "s"))
+(def c9d-k (rayforce/scan-table c9d-g c9d-tid "k"))
+(def c9d-res (rayforce/execute c9d-g
+                (rayforce/join c9d-g c9d-ct2 [c9d-k] c9d-ct [c9d-s])))
+(def c9d-cols (rayforce/table-columns c9d-res))
+# join output order is not position-stable across engine runs - the
+# multiset is pinned (sorted ids), values by key checked exactly
+(assert-eq @["x" "x" "aaa bbb ccc"] (c9d-cols "k") "C9d join keys")
+(assert-eq @[10 10 20] (c9d-cols "v") "C9d join values")
+(assert-eq @[2 5 6] (sorted (c9d-cols "id")) "C9d join ids multiset")
+(:close c9d-res) (:close c9d-g) (:close c9d-t2) (:close c9d-t)
+
+# C9e: the agg-input type fence (v0.1.1, addendum A14 - STR battery
+# F-S1, red-observed pre-fix: :sum over a STR column returned
+# [2 0 0 0 97 97 0], the same string summing to two different values
+# in one execution, deterministic, exit 0). The numeric reducers take
+# I64/F64 input ops only; the fence fires at plan-build time, before
+# any engine call (the A7 join-key fence discipline).
+(def c9e-t (first (rayforce/parquet-rows (string DIR "/str-agg.parquet"))))
+(def c9e-g (rayforce/graph c9e-t))
+(def c9e-s (rayforce/scan c9e-g "s"))
+(def c9e-t2 (rayforce/scan c9e-g "t"))
+(def c9e-id (rayforce/scan c9e-g "id"))
+(each agg [:sum :avg :stddev :var]
+  (assert-raises (fn [] (rayforce/group c9e-g [c9e-id] [[c9e-s agg]]))
+                 (string/format "rayforce: group: agg %q takes I64/F64 input only, got STR" agg)
+                 (string "C9e numeric agg on STR raises (" agg ")")))
+# :count-distinct is fenced for ALL input types (A14/F-S2): the
+# pinned engine's structural group path has no count-distinct
+# reducer - 0 per group on numeric input, nil on STR (v2.11.5).
+(assert-raises (fn [] (rayforce/group c9e-g [c9e-id] [[c9e-s :count-distinct]]))
+               "rayforce: group: :count-distinct is not served"
+               "C9e count-distinct on STR raises")
+(assert-raises (fn [] (rayforce/group c9e-g [c9e-id] [[c9e-id :count-distinct]]))
+               "rayforce: group: :count-distinct is not served"
+               "C9e count-distinct on I64 raises")
+# the type-agnostic aggs accept STR and return correct values
+# (single-row groups: the value itself; min/max verified byte-correct
+# against duckdb ground truth on the same fixture, empty text nil).
+(each agg [:count :first :last :min :max]
+  (def c9e-r (rayforce/execute c9e-g (rayforce/group c9e-g [c9e-id] [[c9e-s agg]])))
+  (def c9e-col
+    (get (rayforce/table-columns c9e-r)
+         (string "s_" (if (= agg :count) "count" agg))))
+  (assert-eq (if (= agg :count) @[1 1 1 1 1 1 1]
+                 @["aa" "aa" "bb" "bb" "aaa" nil nil])
+             c9e-col
+             (string "C9e type-agnostic agg on STR (" agg ")"))
+  (:close c9e-r))
+# the fence does not overfire: numeric agg over the I64 column green
+(def c9e-sum (rayforce/execute c9e-g (rayforce/group c9e-g [c9e-id] [[c9e-id :sum]])))
+(assert-eq {"id" @[1 2 3 4 5 6 7] "id_sum" @[1 2 3 4 5 6 7]}
+           (rayforce/table-columns c9e-sum)
+           "C9e numeric sum green post-fence")
+(:close c9e-sum)
+# C9f: the generic comparison ops on STR pairs (addendum A13, verified
+# byte-correct against duckdb on this fixture: eq selects ids 1,4,6
+# - the empty-text collision compares nil=nil like duckdb ''='';
+# lt selects 2,7; gt selects 3,5).
+(defn c9f-sel [op]
+  (def r (rayforce/execute c9e-g
+            (rayforce/filter c9e-g (rayforce/const-table c9e-g c9e-t) op)))
+  (def ids (sorted ((rayforce/table-columns r) "id")))
+  (:close r)
+  ids)
+(assert-eq @[1 4 6] (c9f-sel (rayforce/eq c9e-g c9e-s c9e-t2))
+            "C9f eq on STR pair")
+(assert-eq @[2 7] (c9f-sel (rayforce/lt c9e-g c9e-s c9e-t2))
+            "C9f lt on STR pair")
+(assert-eq @[3 5] (c9f-sel (rayforce/gt c9e-g c9e-s c9e-t2))
+            "C9f gt on STR pair")
+(:close c9e-g) (:close c9e-t)
+
+# C9g: dictionary-encoded STR is rejected (addendum A13): the same
+# "excess dictionary indices" rejection class as the numeric A5
+# fixture - duckdb dictionary-encodes low-cardinality VARCHAR by
+# default, so a consumer-side duckdb-written STR file hits this.
+(assert-raises (fn [] (rayforce/parquet-rows (string DIR "/str-dict.parquet")))
+               "excess dictionary indices"
+               "C9g dictionary STR rejected")
+
+
 (print "rayforce smoke ok")
+

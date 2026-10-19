@@ -2,11 +2,10 @@
 # columnar engine, via core ffi (not a native module).
 #
 # Public package: janet-rayforce. License: AGPLv3 (see LICENSE). The
-# bound engine is MIT (its notice ships with the upstream source the
-# installer pins; the engine ships whole in this binary - see the
-# embedding statement).
-# Repo: janet-rayforce; the behavioural spec is
-# specs/api-contract.md in this repository.
+# bound engine is MIT (vendored headers keep upstream's notice; the
+# engine ships whole in this binary - see the embedding statement).
+# Repo: hot-tools (module + installer); the behavioural spec is
+# specs/api-contract.md in the janet-data-engines engines tree.
 #
 # Embedding statement (contract section 8, from birth): this module
 # embeds the FULL Rayforce engine - the Rayfall string evaluator is in
@@ -18,8 +17,8 @@
 # Platform (contract section 10): Linux x86_64 built and tested;
 # macOS compile-plausible, unverified; Windows route is WSL2.
 #
-# Pinned C ABI: RayforceDB/rayforce v2.11.5 (tarball sha256 in
-# libs/install-rayforce.sh, which also cross-checks the four
+# Pinned C ABI: RayforceDB/rayforce v2.11.5 (tarball sha256 in the
+# api-census; installer libs/install-rayforce.sh cross-checks the four
 # vendored headers before every build). This is a raw plan-plane
 # binding - no convenience wrappers (the janet-query boundary);
 # no query-layer features.
@@ -56,7 +55,9 @@
 # the module's state via the module environment and the engine ffi
 # directly, and the module does not defend against that caller
 # (contract addendum A11). Nulls: unified nil<->NaN both directions
-# (addendum A2); i64/f64 only at ingest, STR/SYM raise deferred.
+# (addendum A2); i64/f64 only at ingest, SYM stays deferred; STR
+# decodes on read (v0.1.1, addendum A13) - values are copied into
+# janet strings, the pool stays with the table handle.
 
 (import jennystats/typed :prefix "")
 
@@ -69,8 +70,8 @@
   expression arguments through it; it cannot be removed by build or
   link choices) and is NEVER EXPOSED: no public function evaluates a
   string, the parquet reader never reaches it, only caller-constructed
-  plan nodes feed the expression path (enforced by the smoke
-  suite). Platform: Linux x86_64 built and tested; macOS
+  plan nodes feed the expression path (smoke cell C14 enforces the
+  unbound state). Platform: Linux x86_64 built and tested; macOS
   compile-plausible, unverified; Windows route WSL2.")
 
 #==------------------------------------------------------------------------==#
@@ -94,10 +95,10 @@
 (ffi/context lib)
 
 #==------------------------------------------------------------------------==#
-# Bindings - header-cited (source lines in comments)
+# Bindings - census row order (api-census section 1; cites in comments)
 #==------------------------------------------------------------------------==#
 
-# Lifecycle (rayforce.h:63-65, 220, 468-469, 650)
+# Lifecycle (census 1.1; rayforce.h:63-65, 220, 468-469, 650)
 (ffi/defbind ray_version_major :int [])
 (ffi/defbind ray_version_minor :int [])
 (ffi/defbind ray_version_patch :int [])
@@ -106,22 +107,23 @@
 (ffi/defbind ray_retain :void [v :ptr])
 (ffi/defbind ray_release :void [v :ptr])
 
-# Error objects (rayforce.h:260-266). ray_error_msg is
-# exported by the archive but undeclared in the public header (an
-# upstream documentation gap); it is the message half of the
+# Error objects (census 3; rayforce.h:260-266). ray_error_msg is
+# exported by the archive but undeclared in the public header (a
+# census gap recorded in the outcome); it is the message half of the
 # contract's error text - read via a char** cell, nil when unset.
 (ffi/defbind ray_err_from_obj :int [err :ptr])
 (ffi/defbind ray_err_code :string [err :ptr])
 (ffi/defbind ray_error_msg :ptr [])
 (ffi/defbind ray_error_free :void [err :ptr])
 
-# Introspection + data plane (rayforce.h:337-341, 597-622,
+# Introspection + data plane (census 1.2; rayforce.h:337-341, 597-622,
 # 626, 635, 711-721)
 (ffi/defbind ray_obj_type :int [v :ptr])
 (ffi/defbind ray_vec_get_i64 :int64 [vec :ptr idx :int64])
 (ffi/defbind ray_vec_get_f64 :double [vec :ptr idx :int64])
 (ffi/defbind ray_vec_get :ptr [vec :ptr idx :int64])
 (ffi/defbind ray_str_ptr :string [s :ptr])
+(ffi/defbind ray_str_vec_get :ptr [vec :ptr idx :int64 out-len :ptr])
 (ffi/defbind ray_vec_new :ptr [type :int8 capacity :int64])
 (ffi/defbind ray_vec_from_raw :ptr [type :int8 data :ptr count :int64])
 (ffi/defbind ray_vec_append_raw :ptr [vec :ptr src :ptr count :int64])
@@ -139,7 +141,7 @@
 (ffi/defbind ray_sym_find :int64 [str :string len :uint64])
 (ffi/defbind ray_sym_str :ptr [id :int64])
 
-# Plan plane (ops.h:699-756, 813-861, 928, 961)
+# Plan plane (census 1.3; ops.h:699-756, 813-861, 928, 961)
 (ffi/defbind ray_graph_new :ptr [tbl :ptr])
 (ffi/defbind ray_graph_free :void [g :ptr])
 (ffi/defbind ray_graph_add_table :uint16 [g :ptr tbl :ptr])
@@ -180,20 +182,20 @@
 (ffi/defbind ray_optimize :ptr [g :ptr root :ptr])
 (ffi/defbind ray_execute :ptr [g :ptr root :ptr])
 
-# Parquet read (parquet.h:14-28)
+# Parquet read (census 1.4; parquet.h:14-28)
 (ffi/defbind ray_parquet_open :ptr [path :string columns :ptr batch :int64 out :ptr])
 (ffi/defbind ray_parquet_next :ptr [reader :ptr])
 (ffi/defbind ray_parquet_close :void [reader :ptr])
 (ffi/defbind ray_parquet_metadata :ptr [path :string])
 
-# Memory trace (heap.h:246-248) - the smoke's
+# Memory trace (census stress-loop design; heap.h:246-248) - the smoke's
 # leak-counting tier, not public surface.
 (ffi/defbind ray_mem_trace_begin :bool [])
 (ffi/defbind ray_mem_trace_end :void [out :ptr])
 (ffi/defbind ray_mem_stats :void [out :ptr])
 
 # ray_eval_str is deliberately NOT bound (the embedding statement's
-# enforcement - the smoke suite asserts its absence from this module).
+# enforcement - smoke cell C14 asserts its absence from this module).
 
 # Engine type tags (rayforce.h:74-102) and the trace struct (heap.h:166-173)
 (def RAY-I64 5)
@@ -207,7 +209,7 @@
 (def TAG-NAMES {1 "BOOL" 2 "U8" 3 "I16" 4 "I32" 5 "I64" 6 "F32" 7 "F64"
                 8 "DATE" 9 "TIME" 10 "TIMESTAMP" 11 "GUID" 12 "SYM" 13 "STR"})
 
-# Init once per process (both idempotent; policy init-once)
+# Init once per process (census 7: both idempotent; policy init-once)
 (ray_heap_init)
 (def sym-init-rc (ray_sym_init))
 (unless (zero? sym-init-rc)
@@ -224,13 +226,13 @@
 
 (defn/typed err! {:args [:any :string] :ret :any} [p what]
   "THE error-object rule (contract section 3), implemented once for
-  every error-returning engine call: a ray_t* whose RAY_IS_ERR marker
-  is set (the type tag reads RAY_ERROR - the header's from_obj
+  every error-returning census call: a ray_t* whose RAY_IS_ERR marker
+  is set (the type tag reads RAY_ERROR - the census's from_obj
   parenthetical is wrong, it maps codes and returns RAY_ERR_DOMAIN
-  for every NON-error) gets its ASCII code
+  for every NON-error; recorded in the outcome) gets its ASCII code
   extracted, the engine's message read, the object freed with
   ray_error_free (the generic release is a deliberate no-op on error
-  objects), and a janet error raised. A clean value
+  objects - census trap), and a janet error raised. A clean value
   passes through; callers never see a raw engine error object."
   (when (and p (= RAY-ERROR (ray_obj_type p)))
     (def code (try (ray_err_code p) ([_] "?")))
@@ -249,8 +251,8 @@
   ray_obj_type reads the block's type tag (byte 18 of the 32-byte
   ray_t header, rayforce.h:190-227), so a graph pointer (or any
   other object) under a :table kind raises here instead of reading
-  silent garbage from the engine (observed pre-fix: table-nrows
-  returned 0 over a graph pointer)."
+  silent garbage from the engine (red-observed: table-nrows returned
+  0 over a graph pointer)."
   (unless (and (or (struct? x) (table? x))
                (= :pointer (type (get x :ptr)))
                (= :table (get x :kind)))
@@ -263,8 +265,7 @@
 
 # Graph provenance (addendum A9):
 # the ABI affords no graph introspection (no tag, no registry query -
-# ops.h:508-533). The original provenance token was a plain
-# readable field, so a
+# ops.h:508-533). The CR-6 token was a plain readable field, so a
 # forged handle with the copied token reached the engine (exit 139
 # over a table pointer, silent garbage over a freed one). The
 # registry now maps every LIVE graph pointer to its handle and
@@ -273,7 +274,7 @@
 # different value). Cleared on :close. The token stays as a second
 # fence.
 #
-# A10 shape decision: the fence
+# A10 shape decision (addendum A10): the fence
 # state itself moved MODULE-SIDE - graph-state (ops registry, added-
 # table registry, bound pointer) is keyed by the graph pointer, so no
 # public handle field is load-bearing for any check (a field put can
@@ -284,7 +285,7 @@
 # pass the identity fence - mutable-table identity is the one
 # unforgeable fact, and the handles stay tables to keep it.
 #
-# A11 boundary: graph-registry/graph-state
+# A11 boundary (addendum A11): graph-registry/graph-state
 # are top-level defs, hence exported in the module environment -
 # in-process code CAN reach and mutate them through module/cache, so
 # the state is not private against that caller; the guards bind misuse
@@ -296,12 +297,12 @@
 
 (defn/typed check-graph {:args [:any] :ret :any} [x]
   "Type-guard class: every graph/op-taking fn raises on a wrong-kind,
-  closed or non-handle argument (the close-then-use UB fence).
-  Provenance (addendum A9): the handle must BE the registered
-  handle for its pointer - the original provenance token was a
-  plain readable field, and a forged :kind :graph struct with the
-  copied token over a table pointer reached ray_scan and
-  SEGFAULTED (exit 139, observed pre-fix in a subprocess); over a
+  closed or non-handle argument (C13, the close-then-use UB fence).
+  Provenance (addendum A9): the
+  handle must BE the registered handle for its pointer - the CR-6
+  token was a plain readable field, and a forged :kind :graph
+  struct with the copied token over a table pointer reached ray_scan
+  and SEGFAULTED (exit 139, red-observed in a subprocess); over a
   FREED pointer it ran to completion with silent garbage (UAF). No
   ABI fact distinguishes a graph block, so registry identity is the
   fence: no fact used here is copyable off a genuine handle. Boundary
@@ -325,21 +326,21 @@
 (defn/typed check-op {:args [:any :any] :ret :any} [x g]
   "Type-guard class for op arguments: an op is a graph-scoped borrow
   {:graph :id} - the op's :graph must be the SAME graph as the call's
-  (wrong-graph reuse raises, never crosses pointers).
+  (wrong-graph reuse raises, never crosses pointers - plan risk 3).
   With check-graph's registry identity, identity to the call's g also
   proves the op's :graph is a genuine module-constructed handle; the
   op's :id must be a constructor-registered op of that graph
-  (addendum A9 - the A8.1 shape-only boundary is superseded)."
+  (addendum A9 - the A8.1 shape-only boundary is
+  superseded)."
   (check-graph g)
   (unless (and (or (struct? x) (table? x))
                (= :pointer (type (get x :id)))
                (= g (get x :graph)))
     (errorf "rayforce: expected op of this graph, got %s" (type x)))
-  # op-id registry (addendum A9): shape-only let a foreign block
-  # under a genuine graph reach the engine's op paths (silently
-  # wrong values observed) - the op id must be a constructor-
-  # registered op of THIS graph. A10: the registry is MODULE-SIDE
-  # (graph-state), so a
+  # op-id registry (addendum A9): shape-only let a
+  # foreign block under a genuine graph reach the engine's op paths
+  # (silently wrong values observed) - the op id must be a
+  # constructor-registered op of THIS graph. A10: the registry is MODULE-SIDE (graph-state), so a
   # field put on the public handle can no longer inject membership -
   # a caller mutating g's fields changes nothing any check reads.
   (def st (get graph-state (get g :ptr)))
@@ -369,16 +370,16 @@
 
 (defn/typed make-graph {:args [:any :any] :ret :table} [ptr tbl-ptr]
   "A graph handle: raw pointer, :kind :graph, idempotent :close
-  (ray_graph_free - frees the DAG; the bound table survives).
-  Carries the provenance token (check-graph, addendum A9) and
-  NOTHING load-bearing: the op registry, the added-table registry
+  (ray_graph_free - frees the DAG; the bound table survives, census
+  cell c5). Carries the provenance token (check-graph, addendum A9)
+  and NOTHING load-bearing: the op registry, the added-table registry
   and the bound pointer live module-side in graph-state (A10.2, the
-  scan column validation source of addendum A8.2). Boundary
+  scan column validation source of addendum A8/F-v2-D2). Boundary
   (addendum A11): graph-state is module-level and
   exported in the module environment, so in-process code can reach
   and mutate it through module/cache - the guards bind API misuse,
-  not that caller (contract A11). Destructor provenance (A10.1):
-  the closure frees the pointer CAPTURED AT
+  not that caller (contract A11). Destructor provenance (A10.1,
+  addendum A10.1): the closure frees the pointer CAPTURED AT
   CONSTRUCTION and only while THIS handle is still the registered
   live graph - a forged or mutated self cannot redirect the free, a
   second call (any argument shape) is a no-op, and a stale closer
@@ -424,7 +425,7 @@
   [(ray_version_major) (ray_version_minor) (ray_version_patch)])
 
 #==------------------------------------------------------------------------==#
-# Data plane (contract sections 1, 4, 5)
+# Data plane (census 1.2; contract sections 1, 4, 5)
 #==------------------------------------------------------------------------==#
 
 (defn/typed -check-elements {:args [:any :string] :ret :nil} [col what]
@@ -460,12 +461,21 @@
   vec)
 
 (defn/typed decode-column {:args [:any :number :string] :ret :array} [col n what]
-  "Read-back decode (contract section 4 + addendum v1.0.1): the null
-  discriminator is ray_vec_is_null - for F64 that is any-NaN (the
-  unified nil<->NaN mapping, R is.na semantics; no separate bitmap
-  exists in the engine); i64 reads the native int64 lane with the
-  NULL_I64 exact-sentinel decode (a stored NULL_I64 is a null, not
-  INT64_MIN). STR/SYM raise the deferred class."
+  "Read-back decode (contract section 4 + addendum v1.0.1/A13): the
+  null discriminator is ray_vec_is_null - for F64 that is any-NaN
+  (the unified nil<->NaN mapping, R is.na semantics; no separate
+  bitmap exists in the engine); i64 reads the native int64 lane with
+  the NULL_I64 exact-sentinel decode (a stored NULL_I64 is a null,
+  not INT64_MIN). STR decodes through ray_str_vec_get (A13): the
+  null discriminator is the bitmap (ray_vec_is_null) like every
+  other type - a null element can still hand back a non-NULL
+  zero-length pointer, observed on v2.11.5 - and the bytes are
+  COPIED into a janet string (janet owns nothing of the engine
+  pool; a decoded value survives the table handle's close; the
+  upstream empty-text -> native-null collision means an empty
+  parquet string decodes as nil, not \"\" - addendum A13 states
+  the divergence). SYM raises the deferred class (dictionary
+  interning is a later slice)."
   (def tag (ray_obj_type col))
   (case tag
     RAY-I64 (seq [i :range [0 n]]
@@ -477,13 +487,24 @@
     RAY-BOOL (seq [i :range [0 n]]
                 (if (ray_vec_is_null col i) nil
                   (not (zero? (ffi/read :uint8 (ray_vec_get col i))))))
-    RAY-STR (errorf "rayforce: %s: unsupported column type: STR - deferred" what)
+    RAY-STR (let [lbuf (buffer/new-filled 8 0)
+                  out (array/new n)]
+              # the null discriminator is the bitmap, NOT the returned
+              # pointer - a null (empty-text collision included) yields
+              # a non-NULL zero-length pointer, observed on v2.11.5
+              (for i 0 n
+                (buffer/fill lbuf 0)
+                (def p (ray_str_vec_get col i lbuf))
+                (array/push out
+                  (if (or (ray_vec_is_null col i) (nil? p)) nil
+                    (string/from-bytes ;(ffi/read @[:uint8 (int/to-number (ffi/read :uint64 lbuf))] p)))))
+              out)
     RAY-SYM (errorf "rayforce: %s: unsupported column type: SYM - deferred" what)
     (errorf "rayforce: %s: unsupported column type: %s - deferred" what
             (or (get TAG-NAMES tag) (string tag)))))
 
 (defn/typed -check-packed {:args [:any] :ret :nil} [packed]
-  "The packed-seam guard (contract addendum A7.6): a packed f32
+  "The packed-seam guard (addendum A7.6): a packed f32
   handle is SHAPE-validated - :ptr a buffer or true pointer,
   :nrow/:ncol numbers, the pack's :n/:bytes accounting consistent,
   and the buffer form long enough for the claimed bytes (its reads
@@ -508,8 +529,7 @@
             nrow ncol n bytes))
   (when (buffer? (get packed :ptr))
     # the buffer form is bounds-checked by ffi/read, but a short buffer
-    # under a consistent shape reached it as a RAW janet error - check
-    # the claimed byte count up front
+    # under a consistent shape reached it as a RAW janet error - check the claimed byte count up front
     (unless (>= (length (get packed :ptr)) bytes)
       (errorf "rayforce: packed f32 handle buffer is %d bytes, claims %d"
               (length (get packed :ptr)) bytes))))
@@ -537,7 +557,7 @@
   names (equal-length array of strings) name array/packed input;
   struct input is named by its keys. All columns must be equal
   length - ragged input raises, never reaches the engine (it accepts
-  ragged adds silently)."
+  ragged adds silently - the census stress finding, cell R4)."
   [cols &opt names]
   (default names nil)
   (def pairs
@@ -553,16 +573,16 @@
       (or (struct? cols) (table? cols))
       (do
         (when names (error "rayforce: names argument alongside struct input - the keys are the names"))
-        # packed-like pre-check (addendum A9.6): a
+        # packed-like pre-check (addendum A8.5): a
         # map with :ptr but missing :nrow/:ncol previously fell
         # through to this struct branch with a misdirecting
         # container message.
         (each k [:nrow :ncol]
           (when (and (not (nil? (get cols :ptr))) (nil? (get cols k)))
             (errorf "rayforce: table-from-columns: packed-like input has :ptr but is missing :%s - the packed handle requires :ptr, :nrow and :ncol" (string k))))
-        # the container fence (addendum A7.7): a struct VALUE
+        # the container fence: a struct VALUE
         # that is not a column array iterates as bytes/values and builds
-        # silent garbage columns (observed pre-fix: "abc" -> @[97 98 99]) -
+        # silent garbage columns (red-observed: "abc" -> @[97 98 99]) -
         # validate the container kind, exactly like array-input elements.
         (each [k v] (pairs cols)
           (unless (or (array? v) (tuple? v))
@@ -571,9 +591,9 @@
         (seq [p :in (pairs cols)] [(string (first p)) (last p)]))
       (or (array? cols) (tuple? cols))
       (do
-        # the names-length guard, BEFORE any pair building (addendum
-        # A7.1): a names array shorter than cols made map stop at the
-        # shorter side - columns silently DROPPED, exit 0 (observed pre-fix:
+        # the names guard, BEFORE any pair building:
+        # blocking): a names array shorter than cols made map stop at the
+        # shorter side - columns silently DROPPED, exit 0 (red-observed:
         # 2 columns + ["a"] -> a 1-column table). The old post-map guard
         # was unreachable (pairs already truncated). Names must match the
         # column count exactly and be strings.
@@ -591,10 +611,10 @@
           (each nm names
             (unless (string? nm)
               (errorf "rayforce: table-from-columns: names must be strings, got %s" (type nm))))
-          # the duplicate-names fence (addendum A8.5): the engine
+          # the duplicate-names fence: the engine
           # accepts duplicate add_col names, but its two read paths
           # then disagree (table-column resolves the FIRST, table-columns
-          # keeps the LAST - observed pre-fix) - a silent divergence at the
+          # keeps the LAST - red-observed) - a silent divergence at the
           # naming boundary; the typed-contract model requires unique
           # names (R tolerates duplicates; this stack does not).
           (def seen @{})
@@ -608,7 +628,7 @@
       (error "rayforce: expected packed f32 handle {:ptr :n :nrow :ncol}, got buffer - the seam takes a janet-num pack handle, not a raw buffer")
       (errorf "rayforce: table-from-columns: expected columns, packed handle or struct, got %s" (type cols))))
   # the R4 guard: equal length Janet-side (the engine accepts ragged
-  # adds silently - observed pre-fix: [[3-row],[2-row]] built a 3-row table
+  # adds silently - red-observed: [[3-row],[2-row]] built a 3-row table
   # with a phantom 0 value); validate_rectangular is the engine-side
   # belt behind it.
   (when (empty? pairs) (error "rayforce: table-from-columns: no columns"))
@@ -621,15 +641,15 @@
   # consuming row): the wrapper keeps NO ref across adds - it
   # continues from each return; on error the engine consumed the ref
   # and the wrapper drops the cell (raises, never releases the stale
-  # handle - a release there would be the double-free counterfactual).
+  # handle - R1's counterfactual demonstrates the alternative).
   (var t (err! (ray_table_new (length pairs)) "table new"))
-  # error-path cleanup (addendum A12.9): a raise inside
+  # error-path cleanup: a raise inside
   # the loop previously stranded the accumulated engine table; the
   # wrapper releases exactly what it still owns before re-raising -
   # the pending column vec (the engine retains the caller's column
   # ref per section 2, so it is ours on every path), and the table
   # ONLY when the raise is not the consuming add-col call (a failed
-  # add_col consumes the table ref, contract section 2).
+  # add_col consumes the table ref - the S3 trace).
   (var pending nil)
   (var t-consumed false)
   (try
@@ -670,9 +690,9 @@
 (defn/typed table-column {:args [:any :string] :ret :any} [tbl name]
   "The named column as a Janet array (decode per contract section 4),
   or nil when the table has no such column. get_col returns a
-  BORROWED ref (source table.c:211-225 - the earlier owned-row reading
+  BORROWED ref (source table.c:211-225 - the census's owned row
   misattributed the header's totality docs; releasing it corrupts the
-  heap, observed as a phantom third column in the next build) -
+  heap, red-observed as a phantom third column in the next build) -
   the copy-out releases nothing."
   (check-table tbl)
   (def id (ray_sym_find name (length name)))
@@ -698,13 +718,25 @@
   (struct ;kvs))
 
 #==------------------------------------------------------------------------==#
-# Plan plane (contract section 1 - the raw plan surface,
+# Plan plane (census 1.3; contract section 1 - the raw plan surface,
 # no convenience wrappers, no query-layer features)
 #==------------------------------------------------------------------------==#
 
 (def AGG-OPS {:sum 50 :avg 55 :min 52 :max 53 :count 54
               :count-distinct 58 :first 56 :last 57 :stddev 59 :var 74})
 (def JOIN-TYPES {:inner 0 :left 1 :full 2 :anti 3})
+# Per-agg input typing (addendum A14): the numeric
+# reducers reinterpret a non-numeric payload as numbers and silently
+# return garbage (red-observed :sum over STR: [2 0 0 0 97 97 0] - the
+# same string summing to two values in one execution), so they take
+# I64/F64 input ops only. :count/:first/:last/:min/:max are
+# type-agnostic (STR verified byte-correct vs duckdb). :count-distinct
+# is fenced off entirely (F-S2): the pinned engine's structural group
+# path has no count-distinct reducer - it emits 0 per group on numeric
+# input and nil on STR (v2.11.5); the working per-group count-distinct
+# lives in the query-language path only.
+(def AGG-NUMERIC-ONLY {:sum true :avg true :stddev true :var true})
+(def AGG-NUMERIC-TYPES {RAY-I64 true RAY-F64 true})
 
 (defn/typed -op-ids {:args [:any :any] :ret :any} [ops g]
   "The :id pointers of same-graph ops as a janet array (for the ffi
@@ -712,11 +744,11 @@
   (seq [op :in ops] (get (check-op op g) :id)))
 
 (defn/typed -check-scan-col {:args [:any :string :string] :ret :nil} [tbl-ptr name what]
-  "The malformed-plan guard (addendum A8.2): the
+  "The malformed-plan guard (addendum A8, battery v2 F-v2-D2): the
   engine only marks an unknown-column scan OP_FLAG_INVALID_SCAN
   (ops.h:381) and just the filter/distinct executor surfaces it - a
   select projection silently yields an empty or narrowed table
-  (observed pre-fix). The wrapper validates the column against the source
+  (red-observed). The wrapper validates the column against the source
   table before the engine call, so a typo'd projection raises the
   validation class at scan time (contract section 3's totality)."
   (def id (ray_sym_find name (length name)))
@@ -725,8 +757,8 @@
 
 (defn graph
   "A graph handle over a table (the table is borrowed - the engine
-  retains it; graph :close frees the DAG and releases it - the bound
-  table survives)."
+  retains it; graph :close frees the DAG and releases it, census cell
+  c5: the table survives)."
   [tbl]
   (check-table tbl)
   (def g (ray_graph_new (get tbl :ptr)))
@@ -742,7 +774,7 @@
   (def tid (ray_graph_add_table (get g :ptr) (get tbl :ptr)))
   (when (= 65535 tid) (error "rayforce: add-table failed: engine returned error sentinel"))
   # track the registry module-side (A10.2 - a public mutable field was
-  # injectable): sequential from 0, verified on
+  # injectable, battery v4 F-v4-F1): sequential from 0, red-probed on
   # this pin (b->0, c->1) so scan-table can validate its column name
   (def ts (get (get graph-state (get g :ptr)) :tables))
   (unless (= tid (length ts))
@@ -752,7 +784,7 @@
 
 (defn/typed scan {:args [:any :string] :ret :any} [g name]
   "A column op: the named column of the graph's bound table. The name
-  is validated against the bound table (addendum A8.2) - the
+  is validated against the bound table (addendum A8/F-v2-D2) - the
   engine only flags unknown columns for the filter/distinct executor
   and a select projection would silently yield an empty/narrowed
   table. The bound-table rule is the surface semantic: a column of an
@@ -764,7 +796,7 @@
 (defn/typed scan-table {:args [:any :number :string] :ret :any} [g tid name]
   "A column op: the named column of an added table (tid from
   add-table). The name is validated against the registered table
-  (addendum A8.2)."
+  (addendum A8/F-v2-D2)."
   (check-graph g)
   (unless (and (>= tid 0) (<= tid 65534) (= tid (math/round tid)))
     (errorf "rayforce: scan-table: table id must be an integer in [0, 65534], got %q" tid))
@@ -788,12 +820,12 @@
 
 (defn/typed const-i64 {:args [:any :any] :ret :any} [g v]
   "An i64 scalar constant op. The value must be an exact integer INSIDE
-  the double-safe band [-2^53, 2^53] (addendum A8.3): beyond it the
-  janet number model cannot represent the
+  the double-safe band [-2^53, 2^53] (addendum A8, battery v2
+  F-v2-3/D5): beyond it the janet number model cannot represent the
   value exactly and the ffi conversion leaks a raw core error
-  (observed pre-fix at 2^53+1 and 1e300) - enter out-of-band i64 values
+  (red-observed at 2^53+1 and 1e300) - enter out-of-band i64 values
   through the parquet/typed-source path. Argument typing is manual
-  here (addendum A9.6): the defn/typed contract check raised
+  here (addendum A9, F-v3-3): the defn/typed contract check raised
   without the module prefix."
   (unless (number? v)
     (errorf "rayforce: const-i64: expected a number, got %s" (type v)))
@@ -804,8 +836,9 @@
 
 (defn/typed const-bool {:args [:any :any] :ret :any} [g v]
   "A boolean scalar constant op (nil reads as false; any other
-  non-boolean value raises the type-guard class - addendum A8.3: a
-  string previously built a TRUE constant silently)."
+  non-boolean value raises the type-guard class - addendum A8,
+  battery v2 D4: a string previously built a TRUE constant
+  silently)."
   (unless (or (nil? v) (boolean? v))
     (errorf "rayforce: const-bool: expected a boolean or nil (nil reads as false), got %s" (type v)))
   (-ok-op (ray_const_bool (get (check-graph g) :ptr) (not (nil? v))) g "const-bool"))
@@ -862,7 +895,7 @@
 (defn/typed select {:args [:any :any :any] :ret :any} [g input cols]
   "The projection structural op: the table op `input` narrowed to the
   column ops `cols` (same-graph ops, order preserved). cols must be a
-  NON-EMPTY array of ops (addendum A8.2): a nil,
+  NON-EMPTY array of ops (addendum A8, battery v2 F-v2-D2): a nil,
   non-array or empty cols previously built a plan whose execution
   silently returned an empty table (the engine flags nothing on the
   projection path) - contract section 3's \"projecting nothing\"
@@ -888,7 +921,7 @@
     (errorf "rayforce: sort: keys must be an array of ops, got %s" (type keys)))
   (def n (length keys))
   (unless (pos? n) (error "rayforce: sort: no keys"))
-  # optional plan-array guards (addendum A12.8): a
+  # optional plan-array guards (battery v6 reference F-R1): a
   # non-array descs/nulls-first previously reached the length match
   # below and leaked a raw core error; they join the A8.4 family.
   (when descs
@@ -901,7 +934,7 @@
   (def nf (or nulls-first (seq [_ :range [0 n]] false)))
   (unless (and (= n (length d)) (= n (length nf)))
     (errorf "rayforce: sort: descs/nulls-first must match the key count (%d)" n))
-  # per-element boolean fence (addendum A9.6):
+  # per-element boolean fence (addendum A9, battery v3 F-v3-D6):
   # non-boolean elements were coerced through truthiness; the
   # const-bool precedent rejects them.
   (each [arr what] [[d "descs"] [nf "nulls-first"]]
@@ -918,19 +951,24 @@
 (defn/typed -op-out-type {:args [:any] :ret :any} [op]
   "The inferred output type of an op (ray_op_t.out_type, ops.h:391 -
   populated at construction: 7 F64, 5 I64, 1 BOOL, 98 TABLE). The
-  join-key fence's evidence source (addendum A7.2): the
+  join-key fence's evidence source (battery v1 DeepSeek F1): the
   engine compares join keys by RAW PAYLOAD, so mixed key types
-  silently drop non-zero matches (observed pre-fix: only 0 matched); the
-  row-wise expression path coerces correctly."
+  silently drop non-zero matches (red-observed: only 0 matched); the
+  row-wise expression path coerces correctly (battery v1 Flash p3d)."
   (get (ffi/read (ffi/struct :uint16 :uint8 :uint8 :int8) (get op :id)) 3))
 
 (defn/typed group {:args [:any :any :any] :ret :any} [g group-keys aggs]
   "The group-by structural op: group-keys is an array of same-graph
   column ops; aggs is an array of [input-op agg-keyword] pairs (the
-  v1 agg set: :sum :avg :min :max :count :count-distinct :first
-  :last :stddev :var). (The parameter is named group-keys: a `keys`
+  census v1 agg set: :sum :avg :min :max :count :count-distinct :first
+  :last :stddev :var). Input typing (addendum A14): the numeric
+  reducers (:sum :avg :stddev :var) take I64/F64 input ops only; a
+  non-numeric input raises before any engine call; :count-distinct is
+  not served by the pinned engine's structural path and raises; the
+  type-agnostic aggs (:count :first :last :min :max) accept any input
+  type. (The parameter is named group-keys: a `keys`
   param shadowed the core fn and leaked a raw janet error from the
-  unknown-agg guard - addendum A7.8.)"
+  unknown-agg guard - battery v1 DeepSeek F4.)"
   (check-graph g)
   (unless (or (array? group-keys) (tuple? group-keys))
     (errorf "rayforce: group: keys must be an array of ops, got %s" (type group-keys)))
@@ -941,9 +979,22 @@
     (unless (and (or (tuple? pair) (array? pair)) (= 2 (length pair)))
       (error "rayforce: group: aggs must be [input-op agg-keyword] pairs"))
     (check-op (first pair) g)
-    (unless (get AGG-OPS (last pair))
-      (errorf "rayforce: group: unknown agg %q (v1 set: %q)"
-              (last pair) (sorted (keys AGG-OPS)))))
+    (def ak (last pair))
+    (unless (get AGG-OPS ak)
+      (errorf "rayforce: group: unknown agg %q (census v1 set: %q)"
+              ak (sorted (keys AGG-OPS))))
+    # the agg-input type fence (A14, STR battery F-S1 - blocking): the
+    # numeric reducers reinterpret a STR payload as numbers, silently
+    # (deterministic, exit 0); the fence fires at plan-build time, before
+    # any engine call - the A8.4/A8.5 boundary discipline. Same fence
+    # shape as the A7 join-key fence (unknown out_types pass through).
+    (when (= ak :count-distinct)
+      (error "rayforce: group: :count-distinct is not served by the pinned engine's structural group path (silently returns 0 per group on numeric input, nil on STR - engine v2.11.5, addendum A14); compose distinct + group :count across two graphs instead"))
+    (when (get AGG-NUMERIC-ONLY ak)
+      (def t (-op-out-type (first pair)))
+      (unless (or (get AGG-NUMERIC-TYPES t) (= t 0))
+        (errorf "rayforce: group: agg %q takes I64/F64 input only, got %s - the engine reinterprets a non-numeric payload as numbers and silently returns garbage (addendum A14)"
+                ak (or (get TAG-NAMES t) (string t))))))
   (-ok-op (ray_group (get g :ptr)
                      (ffi/write @[:ptr (length group-keys)] (-op-ids group-keys g))
                      (length group-keys)
@@ -985,11 +1036,11 @@
   (def rk (-op-ids rkeys g))
   (unless (= (length lk) (length rk))
     (errorf "rayforce: join: key count mismatch (%d vs %d)" (length lk) (length rk)))
-  # the cross-type key fence (addendum A7.2): the
+  # the cross-type key fence (battery v1 DeepSeek F1, blocking): the
   # engine compares join keys by raw payload, so an F64-built vs
   # I64-loaded key pair silently drops every non-zero match
-  # (observed pre-fix: rows=1 where 2 were expected). Row-wise
-  # expressions coerce correctly - the JOIN KEY path does
+  # (red-observed: rows=1 where 2 were expected). Row-wise
+  # expressions coerce correctly (Flash p3d) - the JOIN KEY path does
   # not. Same-type keys pairwise; unknown (0) out_types pass through.
   (for i 0 (length lkeys)
     (def lt (-op-out-type (get lkeys i)))
@@ -1029,10 +1080,10 @@
   "Execute the plan: the result table handle (owned; the engine's
   error object - malformed plans raise typed errors, never crash -
   is extracted, freed and raised). The graph stays usable; the result
-  survives graph close. The root must be table-node
-  shaped (addendum A7.3): a bare column op as root returns the
+  survives graph close (census cell c5). The root must be table-node
+  shaped (battery v1 Flash F2): a bare column op as root returns the
   engine's bare VECTOR, which read as a table is an empty result -
-  silently wrong, now a validation raise (observed pre-fix: nrows=0,
+  silently wrong, now a validation raise (red-observed: nrows=0,
   ncols=0, no error; select/group/filter roots are table nodes)."
   (check-graph g)
   (def result (err! (ray_execute (get g :ptr) (get (check-op root g) :id)) "execute"))
@@ -1042,7 +1093,7 @@
   (make-table result))
 
 #==------------------------------------------------------------------------==#
-# Stress tier (internal - the smoke's leak-counting lane; contract
+# Stress tier (internal - the smoke's leak-counting arm; contract
 # section 12. Not public surface: the defbinds above are importable
 # raw, this helper wraps the trace scope)
 #==------------------------------------------------------------------------==#
@@ -1061,21 +1112,21 @@
   [(get tr 4) (get tr 0) (get tr 1) result])
 
 #==------------------------------------------------------------------------==#
-# Parquet read (contract sections 1, 3, 5)
+# Parquet read (census 1.4; contract sections 1, 3, 5)
 #==------------------------------------------------------------------------==#
 
 (defn/typed -check-batch-types {:args [:any] :ret :nil} [tbl]
-  "Deferred-type fence on parquet tables (contract section 5): every
-  column must be I64 or F64 - a STR/SYM (or other-typed) column in
-  ANY batch raises the deferred class loud, never a coerced or
-  shortened read."
+  "Deferred-type fence on parquet tables (contract section 5 + A13):
+  every column must be I64, F64 or STR - any other type (SYM, F32,
+  I32, BOOL-as-I16, ...) in ANY batch raises the deferred class loud,
+  never a coerced or shortened read."
   (def ptr (get tbl :ptr))
   (def n (int/to-number (ray_table_ncols ptr)))
   (for i 0 n
     (def col (ray_table_get_col_idx ptr i))
     (when (nil? col) (errorf "rayforce: parquet column %d missing" i))
     (def tag (ray_obj_type col))
-    (unless (or (= RAY-I64 tag) (= RAY-F64 tag))
+    (unless (or (= RAY-I64 tag) (= RAY-F64 tag) (= RAY-STR tag))
       (def nm (or (get TAG-NAMES tag) (string tag)))
       (errorf "rayforce: parquet: unsupported column type: %s - deferred" nm))))
 
@@ -1084,7 +1135,11 @@
   rows per table, default 65536, an integer 1..65536). The reader is
   closed before returning; nothing survives on an error path. Schema
   rejection (DECIMAL/nested - the engine's flat-primitive rule) and
-  deferred column types (STR/SYM) raise the engine's exact text."
+  deferred column types (SYM and every other non-I64/F64/STR type)
+  raise the engine's exact text. STR columns decode to Janet strings
+  (v0.1.1, addendum A13) - values copied out, the pool stays with
+  the handle; empty parquet text arrives as nil (the upstream
+  native-null collision, documented divergence)."
   [path &opt batch]
   (default batch 65536)
   (unless (and (string? path) (pos? (length path)))

@@ -3,7 +3,7 @@
   :name "janet-rayforce"
   :description "The Rayforce columnar engine in the Janet process via core ffi - plan-plane ops, parquet reads, typed-contract handles"
   :license "AGPL-3.0"
-  :version "0.1.0"
+  :version "0.1.1"
   :dependencies ["https://github.com/jennystats/janet-num"])
 
 (declare-source
