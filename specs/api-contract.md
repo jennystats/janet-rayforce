@@ -66,7 +66,7 @@ carry `:close`.
   conflict). Rationale: duckdb-parity - unnamed columns round-trip
   through the parquet interchange without renaming.
 - `table-column` / `table-columns`: values decode per section 4
-  (bitmap null -> nil, payload NaN stays NaN).
+  (typed null models per column type; F64 null and NaN decode as nil).
 - `sort` defaults: ascending, nulls last. `join` default type
   `:inner`. `head`/`tail` n is clamped to row count.
 - `parquet-rows`: `batch` is the reader's `batch_rows` (default 65536;
@@ -124,25 +124,38 @@ never the handle it passed.
 
 ## 4. Null mapping (both directions, per column type)
 
-- Read (engine -> Janet): the engine's column null bitmap drives the
-  decode - a bitmap null becomes Janet `nil`; a real NaN payload stays
-  NaN. Integer nulls (engine sentinel payloads) decode via the bitmap
-  the same way - a stored NULL_I64 is a null, not INT64_MIN.
-- Write (Janet -> engine): v1 writes F64 columns from Janet number
-  arrays (the input-typing rule, section 1 - always F64). I64 write
-  paths exist only via typed sources (parquet, execute results) -
-  not via Janet number arrays.
-  - i64: Janet `nil` sets the bitmap null bit; integers pass through.
-  - f64: Janet `nil` sets the bitmap null bit; numbers pass through
-    bit-exactly (including NaN payloads - a NaN in the input column
-    writes a NaN value that reads back as NaN, not null).
+Per-type null models in the engine (v2.11.5, `rayforce.h` null-model
+comment) - there is NO per-row validity bitmap; `HAS_NULLS` is a
+vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
+`src/vec/vec.h:50`), never the null discriminator:
+
+- **Read (engine -> Janet)**: `ray_vec_is_null` dispatches per type -
+  F64: the whole NaN class (`x != x`, the engine's single-null float
+  model); i16/i32/i64: in-band `INT*_MIN` sentinels
+  (`NULL_I16/I32/I64`, `rayforce.h:548-550` - a stored `NULL_I64` is
+  a null, not `INT64_MIN`); BOOL/U8: the typed-null aux bit;
+  SYM/STR: canonical empty values (sym 0 / empty string). A decoded
+  null becomes Janet `nil`.
+- **Write (Janet -> engine)**: a Janet `nil` goes through
+  `ray_vec_set_null`, which writes the type's sentinel (F64:
+  `NULL_F64`; integers: their `NULL_I*` values). The wrapper never
+  constructs a validity bitmap. Number arrays always build F64
+  columns (the input-typing rule, section 1 - always F64; I64 write
+  paths exist only via typed sources: parquet, execute results).
+  - f64: `nil` writes the `NULL_F64` sentinel. Because the read
+    predicate is the whole NaN class, any NaN value reads back as
+    nil too - nil and NaN are the same encoding in both directions
+    (the unified mapping, R `is.na` semantics).
+  - i64: `nil` writes `NULL_I64`; integers pass through bit-exactly.
   - f32-packed (janet-num seam): widened to f64 before ingest; the
-    pack path encodes NULL as NaN, so a NULL in the packed source
-    arrives as a NaN VALUE, not a null. Documented asymmetry of the
-    seam: pack-side nulls are NaN-valued on the rayforce side.
-  The wrapper builds the null bitmap itself (the engine takes typed
-  raw data + a null bitmap), so the write rule is exact by
-  construction and pinned by tests in both directions.
+    pack path encodes NULL as NaN, which the read predicate (any-NaN)
+    decodes as a null - symmetric with plain nil input (the v1.0
+    "NaN VALUE, not a null" asymmetry was an artefact of the wrong
+    bitmap model; superseded by addendum A2, now folded here).
+
+Mechanism corrected against the pinned v2.11.5 source following
+upstream issue #934 (2026-10-21); the v1.0/v1.0.1 "null bitmap"
+wording described a mechanism the engine does not have.
 
 ## 5. Deferred types, loud failure
 
@@ -318,7 +331,12 @@ these correct are superseded where they conflict.
   argument overrides by position; struct input takes names from its
   keys and RAISES on a `names` argument (explicit-argument conflict).
 
-### A2. Null mapping (section 4) - the F64 model corrected
+### A2. Null mapping (section 4) - the F64 model corrected (FOLDED into section 4, v0.1.2)
+
+> Superseded by the section 4 rewrite (2026-10-21, upstream issue
+> #934): this addendum's F64 model is now the section 4 text, extended
+> with the integer sentinel / HAS_NULLS mechanism and the write path.
+> Kept for the v1.0.1 provenance.
 
 For F64 the engine has NO separate null bitmap: `ray_vec_set_null`
 writes the `NULL_F64` NaN sentinel into the payload and
