@@ -57,7 +57,10 @@ import gives the same call sites with the `rayforce/` prefix.
   never a shortened table.
 - **Null mapping is unified**: Janet `nil` and any NaN value are the
   same encoding in both directions (the R `is.na` semantics; the
-  engine's F64 model has no separate null bitmap).
+  engine's F64 model has no separate null bitmap). Upstream-confirmed
+  as a deliberate design decision - rayforce
+  [issue #934](https://github.com/RayforceDB/rayforce/issues/934)
+  (single-null float model retained; NaN/NA are not distinguished).
 - **Ownership**: table and graph handles carry an idempotent `:close`,
   so `with` works; `execute` results are owned tables; ops are
   graph-scoped borrows, not handles. A failed consuming call leaves

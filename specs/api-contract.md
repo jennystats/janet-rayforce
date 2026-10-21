@@ -155,6 +155,9 @@ vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
     statement here is the write-side fact only).
 
 Mechanism corrected against the pinned v2.11.5 source following
+upstream issue #934 (2026-10-21). The unified nil/NaN model itself is
+upstream-CONFIRMED as a deliberate design decision in the same issue:
+the single-null float model is retained, NaN/NA are not distinguished.
 upstream issue #934 (2026-10-21); the v1.0/v1.0.1 "null bitmap"
 wording described a mechanism the engine does not have.
 
