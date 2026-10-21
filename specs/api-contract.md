@@ -148,10 +148,11 @@ vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
     (the unified mapping, R `is.na` semantics).
   - i64: `nil` writes `NULL_I64`; integers pass through bit-exactly.
   - f32-packed (janet-num seam): widened to f64 before ingest; the
-    pack path encodes NULL as NaN, which the read predicate (any-NaN)
-    decodes as a null - symmetric with plain nil input (the v1.0
-    "NaN VALUE, not a null" asymmetry was an artefact of the wrong
-    bitmap model; superseded by addendum A2, now folded here).
+    pack path encodes NULL as NaN, so a NULL in the packed source
+    arrives as a NaN VALUE on the rayforce side - the documented
+    asymmetry of the seam stands pending the #934 semantics decision
+    (the any-NaN read predicate decodes it as nil; the conservative
+    statement here is the write-side fact only).
 
 Mechanism corrected against the pinned v2.11.5 source following
 upstream issue #934 (2026-10-21); the v1.0/v1.0.1 "null bitmap"
