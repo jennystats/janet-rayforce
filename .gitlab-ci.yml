@@ -10,4 +10,4 @@ include:
       module_name: "rayforce"
       janet_setup: "libs/install-rayforce.sh"
       native_needs: "rayforce"
-      pm_expected_red: "true"
+      pm_expected_red: true
