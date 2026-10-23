@@ -7,6 +7,7 @@ include:
     file: /templates/gate.yml
     inputs:
       project_name: "janet-rayforce"
+      module_name: "rayforce"
       janet_setup: "libs/install-rayforce.sh"
       native_needs: "rayforce"
       pm_expected_red: "true"
