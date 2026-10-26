@@ -39,7 +39,12 @@
   (unless (string/find needle e)
     (errorf "assert %s: expected raise containing %q, got %q" msg needle e)))
 
-(assert-eq [2 11 5] (rayforce/engine-version) "engine version 2.11.5")
+# Engine pin. $RAYFORCE_EXPECT_VERSION overrides it so the same suite can
+# verify a candidate pin alongside the installed one (pin-upgrade runs both).
+(def expected-version (if-let [v (get (os/environ) "RAYFORCE_EXPECT_VERSION")]
+                        (tuple ;(map scan-number (string/split "." v)))
+                        [3 0 1]))
+(assert-eq expected-version (rayforce/engine-version) "engine version 3.0.1")
 
 #==------------------------------------------------------------------------==#
 # Conformance checks

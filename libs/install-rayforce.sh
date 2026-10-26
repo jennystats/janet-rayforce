@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install the pinned librayforce.so for the rayforce janet module
-# (modules/jennystats/rayforce.janet). Fetches the RayforceDB/rayforce v2.11.5
-# tag tarball, verifies sha256, CROSS-CHECKS the four vendored headers
+# (jennystats/rayforce.janet). Fetches the RayforceDB/rayforce tag
+# tarball, verifies sha256, CROSS-CHECKS the four vendored headers
 # (ops.h parquet.h heap.h rayforce.h - a drift is a hard failure
 # BEFORE any compile: the binding would compile against one ABI while
 # the pins document another), then builds the static
@@ -10,20 +10,29 @@
 # about THIS binary) and links the shared object from the release
 # objects. Idempotent; re-run rebuilds. Deps: gcc + make + curl + tar
 # (the engine itself is zero-dependency: libc, libm, pthreads).
+#
+# DEST may be overridden to install a second pin alongside the current
+# one: DEST=$HOME/.local/lib/rayforce-v301 ./install-rayforce.sh
+# The module resolves $RAYFORCE_LIB first, then ~/.local/lib/rayforce.
 set -e
-VERSION="2.11.5"
+VERSION="3.0.1"
 URL="https://api.github.com/repos/RayforceDB/rayforce/tarball/v${VERSION}"
-TARBALL_SHA256="fec660bb01cfd53cbc816da82e89c61c7fc803ce4c56f64fb3ee83cc04079406"
-DEST="$HOME/.local/lib/rayforce"
+TARBALL_SHA256="3a42998400ed4136558e65ec3386e26548994db76e0c3ed8f9b52f2c4487e335"
+DEST="${DEST:-$HOME/.local/lib/rayforce}"
 
 # Vendored-header pins (the ABI truth):
 #   upstream path -> sha256
 declare -A HEADER_SHA=(
-  ["include/rayforce.h"]="27ca40288575aad8869b2503327241bdf1e8457565d5ec2c4c07da8d24107949"
-  ["src/ops/ops.h"]="9c278449665d7c41b486bd728957fa29f91d6c0f2c03f91ed677a30c0ef39c8c"
+  ["include/rayforce.h"]="c73c85c94f3dacdf9b437114f1794233823c50c0fb6d122cd925650e65bb5158"
+  ["src/ops/ops.h"]="a82e47e96bdea0794fc0123d26a29e2bc0497e92d83716b3ac902a4b239d0bd8"
   ["src/io/parquet.h"]="0b34603ada9b8699226be029fc8ba7483be65293a908098b5937222d97acf290"
-  ["src/mem/heap.h"]="cc2c955e5423dec8ba1b12bd43722e0997192a9e44007df5cd262af37846d1a5"
+  ["src/mem/heap.h"]="34a9ce98abc5c37c111b70ed77d41a321bd9f7b93f8d92d8657e51a2e96b68ae"
 )
+
+# Release-object suffix. v2.11.5 emitted *.rel.o; v3.0.1 emits *.lib.o.
+# The link step below globs this, so a stale value silently links an
+# EMPTY shared object (exit 0, unusable .so) instead of failing.
+REL_OBJ_SUFFIX="lib.o"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -76,13 +85,39 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 # assigns RELEASE_CFLAGS, so an exported env var is silently ignored
 # (caught on the first installer run - the build log showed -O3
 # -march=native -fassociative-math).
+#
+# The single deviation from the v2.11.5 recipe is the last variable:
+# v3.0.1's new src/ops/colgather.c trips clang's -Werror=maybe-uninitialized
+# on `off` in acc_put (set through acc_pool_put via ray_data(a->pool), which
+# the analyzer cannot see through). gcc is clean; this box's cc is clang.
+# It is scoped to THAT ONE OBJECT through the Makefile's existing
+# FP_STRICT_<stem> per-file hook, and it changes diagnostics only - never
+# emitted code, optimisation or FP results. Re-evaluate at every pin bump;
+# remove when upstream fixes it or the analyzer catches up.
 make -C "$SRC" lib -j"$JOBS" RAY_VERSION="$VERSION" \
-  RELEASE_CFLAGS='-fPIC -Wall -Wextra -Werror -Wstrict-prototypes -Wno-unused-parameter -std=c17 -O2'
+  RELEASE_CFLAGS='-fPIC -Wall -Wextra -Werror -Wstrict-prototypes -Wno-unused-parameter -std=c17 -O2' \
+  'FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized'
 
-cc -shared -o "$TMP/librayforce.so" $(/usr/bin/find "$SRC/src" -name '*.rel.o') \
+# Link the shared object from the release objects. A glob that matches
+# nothing must be a hard failure, not an empty archive: guard the count.
+OBJS=("$SRC"/src/*/*."$REL_OBJ_SUFFIX")
+if [ "${#OBJS[@]}" -eq 0 ] || [ ! -e "${OBJS[0]}" ]; then
+  echo "error: no *.$REL_OBJ_SUFFIX release objects found after build" >&2
+  echo "  (upstream changed the object suffix again - update REL_OBJ_SUFFIX)" >&2
+  exit 1
+fi
+
+cc -shared -o "$TMP/librayforce.so" $(/usr/bin/find "$SRC/src" -name "*.$REL_OBJ_SUFFIX") \
   -lm -lpthread -Wl,--gc-sections
+
+# A shared object with no ray_ symbols links successfully from an empty
+# object set; assert the ABI surface is actually there.
+if ! nm -D --defined-only "$TMP/librayforce.so" | awk '{print $3}' | /usr/bin/grep -qx 'ray_version_major'; then
+  echo "error: linked librayforce.so exports no ray_ symbol - refusing to install" >&2
+  exit 1
+fi
 
 mkdir -p "$DEST"
 install -m 644 "$TMP/librayforce.so" "$DEST/librayforce.so"
 echo "installed: $DEST/librayforce.so"
-echo "usage    : (import jennystats/rayforce) - resolution: \$RAYFORCE_LIB, then the path above"
+echo "usage    : (import jennystats/rayforce) - resolution: \$RAYFORCE_LIB, then ~/.local/lib/rayforce"
