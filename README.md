@@ -5,7 +5,7 @@ jpm native module, no Janet-side C build. It exposes the engine's raw
 plan plane: build a graph of table ops and expressions, execute it,
 read the result table back; parquet files read as flat I64/F64
 columns, bitwise-exact. The engine is pinned to
-[RayforceDB/rayforce](https://github.com/RayforceDB/rayforce) v2.11.5
+[RayforceDB/rayforce](https://github.com/RayforceDB/rayforce) v3.0.1
 by a sha256-verified installer that also cross-checks the four ABI
 headers against their content hashes before every build.
 
@@ -121,6 +121,13 @@ pass condition is net bytes 0, alloc == free), guard regressions
 the embedding statement. It skips cleanly when librayforce or the
 janet-num kernel is absent; present-but-broken is a fail, never a
 skip.
+
+Set `RAYFORCE_EXPECT_VERSION` to check the suite against a different
+engine pin without editing it, e.g. the installed rollback:
+
+```bash
+RAYFORCE_EXPECT_VERSION=2.11.5 ./run_tests.sh
+```
 
 ## License
 

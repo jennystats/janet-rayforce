@@ -1,11 +1,11 @@
-# Spec - rayforce.janet public API contract (v1.0, engine v2.11.5)
+# Spec - rayforce.janet public API contract (v1.0, engine v3.0.1)
 
 Non-prose companion specification: the canonical signatures live in the
 module docstrings (with the module); this contract carries what
 signatures cannot - preconditions, ownership, error taxonomy, null
 mapping, UB boundaries. Binding truth: the module over `librayforce.so`
 built by `libs/install-rayforce.sh` from the pinned source; external
-truth: the Rayforce C ABI v2.11.5, pinned by the vendored headers
+truth: the Rayforce C ABI v3.0.1, pinned by the vendored headers
 (Sources).
 
 ## 1. Surface (v1)
@@ -124,7 +124,7 @@ never the handle it passed.
 
 ## 4. Null mapping (both directions, per column type)
 
-Per-type null models in the engine (v2.11.5, `rayforce.h` null-model
+Per-type null models in the engine (v3.0.1, `rayforce.h` null-model
 comment) - there is NO per-row validity bitmap; `HAS_NULLS` is a
 vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
 `src/vec/vec.h:50`), never the null discriminator:
@@ -150,11 +150,13 @@ vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
   - f32-packed (janet-num seam): widened to f64 before ingest; the
     pack path encodes NULL as NaN, so a NULL in the packed source
     arrives as a NaN VALUE on the rayforce side - the documented
-    asymmetry of the seam stands pending the #934 semantics decision
-    (the any-NaN read predicate decodes it as nil; the conservative
-    statement here is the write-side fact only).
+    asymmetry of the seam stands. #934 is CLOSED as retained-current-
+    behaviour (the maintainer kept the single-null float model), so
+    there is no pending semantics decision: the any-NaN read predicate
+    decodes it as nil, and the conservative statement here is the
+    write-side fact only.
 
-Mechanism corrected against the pinned v2.11.5 source following
+Mechanism corrected against the pinned engine source following
 upstream issue #934 (2026-10-21). The unified nil/NaN model itself is
 upstream-CONFIRMED as a deliberate design decision in the same issue:
 the single-null float model is retained, NaN/NA are not distinguished.
@@ -242,8 +244,9 @@ goal; WSL2 is the documented route.
 
 ## 11. Version coupling
 
-Pinned to engine v2.11.5 (tarball sha256 in
-`libs/install-rayforce.sh`). The binding surface compiles against
+Pinned to engine v3.0.1 (tarball sha256 in
+`libs/install-rayforce.sh`; the v2.11.5 pin was re-verified to
+v3.0.1 and the surface re-passed - A13). The binding surface compiles against
 internal headers (`ops.h`, `parquet.h`,
 `heap.h`), content-hash pinned in the installer - a version
 bump requires: re-verify the tarball, diff the vendored headers,
@@ -810,12 +813,56 @@ pinned by regression checks in the smoke suite.
 
 This addendum row set is the v1.0.1 contract state.
 
+## Addendum v1.0.2 (2026-10-26, engine pin v2.11.5 -> v3.0.1)
+
+### A13. Engine pin re-verification (section 11 procedure executed)
+
+The section 11 bump procedure ran in full; no contract row changed.
+
+- **A13.1 ABI delta: additive only.** Exported-symbol diff between the two
+  built archives: 424 symbols added, 5 removed (`ray_col_stream_hash_all`,
+  `ray_col_stream_hash_one`, `ray_col_stream_hash_wave`,
+  `ray_csv_hash_upgrade_check`, `ray_splay_hash_column` - none called by
+  the binding). All 82 distinct `ray_*` symbols the module calls are still
+  exported, and every declaration is either byte-identical or
+  comment-only changed. `ray_error_msg` moved from the internal
+  `src/core/runtime.h` to the public `include/rayforce.h`; the declaration
+  itself is unchanged. The two structs the binding depends on are
+  unchanged: `ray_op_t` (the `ffi/struct :uint16 :uint8 :uint8 :int8`
+  read of `out_type` at offset 3 in the join-key fence) is byte-identical,
+  and `ray_t` layout is untouched (the module only passes opaque
+  pointers). Type codes are unchanged; `RAY_TIMESPAN 16` is new in a
+  previously unused slot. `src/io/parquet.h` is byte-identical to
+  v2.11.5, so the parquet pin did not move.
+- **A13.2 Null model unchanged, and this is now settled.** Upstream issue
+  #934 proposed an R-style NA payload to distinguish missing from NaN. It
+  is CLOSED as NOT ADOPTED: the maintainer retained the single-null float
+  model. v3.0.1 therefore carries no null-model change, and section 4
+  stands verbatim. Measured: the F64 NaN/null collapse behaves identically
+  on both engines, and all 198 conformance probes report the same verdict
+  on both engines (the only difference is the version assert).
+- **A13.3 The one build-recipe deviation (section 9).** v3.0.1's new
+  `src/ops/colgather.c` trips clang's `-Werror=maybe-uninitialized` on a
+  value the analyzer cannot see through the pool indirection; gcc is
+  clean. The installer suppresses that one diagnostic for that one object
+  (`FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized`). It is a
+  diagnostics-only flag: no effect on emitted code, optimisation or FP
+  results, so every section 9 precision claim still holds. Re-evaluate at
+  each pin bump.
+- **A13.4 Section 12 re-verified on the new engine.** The parquet bitwise
+  cells and the numeric precision spot-check produce byte-identical
+  IEEE-754 patterns on both engines, including subnormals, the minimum
+  normal and DBL_MAX. The ownership runs in `specs/ownership.qnt` pass on
+  the new pin.
+
+This addendum row set is the v1.0.2 contract state.
+
 ## Sources
 
 - `libs/install-rayforce.sh` - the engine pin (tarball sha256) and
   the vendored-header content hashes (the ABI truth, cross-checked
   before every build).
-- The Rayforce C ABI v2.11.5 (the external truth).
+- The Rayforce C ABI v3.0.1 (the external truth).
 - `specs/ownership.qnt` - the checked ownership protocol (section 12).
 - The sibling contracts in this stack (janet-duckdb, janet-xgboost) -
   the specification template and the guard-taxonomy precedent.
