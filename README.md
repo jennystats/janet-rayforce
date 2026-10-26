@@ -85,7 +85,7 @@ The module binds the engine's C ABI over ffi, so it needs the pinned
 shared library (sha256-verified, idempotent):
 
 ```bash
-libs/install-rayforce.sh   # rayforce v2.11.5 -> ~/.local/lib/rayforce/
+libs/install-rayforce.sh   # rayforce v3.0.1 -> ~/.local/lib/rayforce/
 ```
 
 Module dependencies: [janet-num](https://github.com/jennystats/janet-num)
@@ -126,7 +126,8 @@ Set `RAYFORCE_EXPECT_VERSION` to check the suite against a different
 engine pin without editing it, e.g. the installed rollback:
 
 ```bash
-RAYFORCE_EXPECT_VERSION=2.11.5 ./run_tests.sh
+# rollback check against the v2.11.5 backup:
+# RAYFORCE_LIB=~/.local/lib/rayforce-v2115-rollback RAYFORCE_EXPECT_VERSION=2.11.5 ./run_tests.sh
 ```
 
 ## License
