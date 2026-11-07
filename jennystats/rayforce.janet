@@ -460,6 +460,22 @@
     (when (nil? v) (ray_vec_set_null vec i true)))
   vec)
 
+(defn/typed -bulk-decode {:args [:any :number] :ret :any} [col n]
+  "One-call block read for the F64/I64 lanes (nil = use the per-element
+lane). F64: any NaN is a null (the unified mapping), so the block maps
+straight to nil. I64: the block maps through int/to-number, which raises
+on the NULL_I64 sentinel and on out-of-band values - both cases hand the
+column back so the per-element lane can tell a null from a band error."
+  (def tag (ray_obj_type col))
+  (def base (ray_vec_get col 0))
+  (when (nil? base)
+    (break nil))
+  (case tag
+    RAY-F64 (seq [v :in (ffi/read @[:double n] base)] (if (nan? v) nil v))
+    RAY-I64 (try (map int/to-number (ffi/read @[:int64 n] base))
+              ([_] nil))
+    nil))
+
 (defn/typed decode-column {:args [:any :number :string] :ret :array} [col n what]
   "Read-back decode (contract section 4 + addendum v1.0.1/A13): the
   null discriminator is ray_vec_is_null - for F64 that is any-NaN
@@ -475,15 +491,24 @@
   upstream empty-text -> native-null collision means an empty
   parquet string decodes as nil, not \"\" - addendum A13 states
   the divergence). SYM raises the deferred class (dictionary
-  interning is a later slice)."
+  interning is a later slice). The numeric lanes read the whole block
+  in ONE ffi call (ray_vec_get base pointer + an array read); an i64
+  block that will not convert (a NULL_I64 sentinel or an out-of-band
+  value) falls back to the per-element lane, which decides
+  null-versus-band-error exactly as before."
   (def tag (ray_obj_type col))
+  (def bulk (if (and (pos? n) (or (= tag RAY-F64) (= tag RAY-I64)))
+              (-bulk-decode col n)
+              nil))
   (case tag
-    RAY-I64 (seq [i :range [0 n]]
-                (if (ray_vec_is_null col i) nil
-                  (try (int/to-number (ray_vec_get_i64 col i))
-                    ([e] (errorf "rayforce: %s: value outside the double-safe band [-2^53, 2^53] - the janet number model cannot represent it exactly" what)))))
-    RAY-F64 (seq [i :range [0 n]]
-                (if (ray_vec_is_null col i) nil (ray_vec_get_f64 col i)))
+    RAY-I64 (or bulk
+                (seq [i :range [0 n]]
+                  (if (ray_vec_is_null col i) nil
+                    (try (int/to-number (ray_vec_get_i64 col i))
+                      ([e] (errorf "rayforce: %s: value outside the double-safe band [-2^53, 2^53] - the janet number model cannot represent it exactly" what))))))
+    RAY-F64 (or bulk
+                (seq [i :range [0 n]]
+                  (if (ray_vec_is_null col i) nil (ray_vec_get_f64 col i))))
     RAY-BOOL (seq [i :range [0 n]]
                 (if (ray_vec_is_null col i) nil
                   (not (zero? (ffi/read :uint8 (ray_vec_get col i))))))
@@ -686,6 +711,59 @@
   (def id (ray_table_col_name (get tbl :ptr) idx))
   (when (neg? id) (errorf "rayforce: column %d has no name" idx))
   (ray_str_ptr (ray_sym_str id)))
+
+(defn/typed -column-tags {:args [:any] :ret :array} [tbl]
+  "Engine type tag per column, in order, with no row decode - the
+  backend's fast-path predicate reads types through this."
+  (check-table tbl)
+  (seq [i :range [0 (int/to-number (ray_table_ncols (get tbl :ptr)))]]
+    (ray_obj_type (ray_table_get_col_idx (get tbl :ptr) i))))
+
+(defn/typed -table-alias {:args [:any :any] :ret :table} [tbl renames]
+  "A shallow table over tbl's column vectors with replacement names: one
+  retained ref per column, no row decode, the source handle neither
+  modified nor closed (it may be closed while the alias lives - the
+  retained refs keep the vectors; A3, get_col is borrowed and add_col
+  retains its column). The engine has no rename op, so this is the naming
+  control the join lane needs without a Janet round trip. `renames` maps
+  every source column name to its new name (by NAME: a table's column
+  index order is not the add order)."
+  (check-table tbl)
+  (def n (int/to-number (ray_table_ncols (get tbl :ptr))))
+  (def seen @{})
+  (def used @{})
+  (var t (err! (ray_table_new n) "table alias new"))
+  (var consumed false)
+  (var pending nil)
+  (try
+    (do
+      (each i (range n)
+        (def old (-column-name tbl i))
+        (def nm (get renames old))
+        (unless (string? nm)
+          (errorf "rayforce: table-alias: no new name for column %q" old))
+        (put used old true)
+        (when (get seen nm)
+          (errorf "rayforce: table-alias: duplicate column name %q - names must be unique" nm))
+        (put seen nm true)
+        (def col (ray_table_get_col_idx (get tbl :ptr) i))
+        (when (nil? col) (errorf "rayforce: table-alias: column %q missing" old))
+        (ray_retain col)
+        (set pending col)
+        (set consumed true)
+        (set t (err! (ray_table_add_col t (ray_sym_intern nm (length nm)) col)
+                     (string "table alias column " nm)))
+        (set consumed false)
+        (set pending nil)
+        (ray_release col))
+      (each k (keys renames)
+        (unless (get used k)
+          (errorf "rayforce: table-alias: no column named %q to rename" k)))
+      (err! (ray_table_validate_rectangular t "table-alias") "table alias validate")
+      (make-table t))
+    ([e] (when pending (ray_release pending))
+         (unless consumed (ray_release t))
+         (error e))))
 
 (defn/typed table-column {:args [:any :string] :ret :any} [tbl name]
   "The named column as a Janet array (decode per contract section 4),

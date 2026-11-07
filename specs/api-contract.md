@@ -857,6 +857,43 @@ The section 11 bump procedure ran in full; no contract row changed.
 
 This addendum row set is the v1.0.2 contract state.
 
+## Addendum v1.0.3 (2026-11-07, execution-path performance)
+
+No behavioural row changed. Two internal helpers were added and the numeric
+read-back lane gained a bulk path; every value, null mapping, ordering rule
+and ownership guarantee above stands.
+
+- **A14.1 bulk numeric read-back (section 4 decode).** `decode-column` reads
+  an F64 or I64 column in ONE ffi call: `ray_vec_get` gives the block's base
+  pointer and an array read copies the lane in a single crossing. F64 keeps
+  the unified mapping (any NaN is a null, A2). I64 maps through
+  `int/to-number`; a column that will not convert (a `NULL_I64` sentinel or a
+  value outside the double-safe band) is re-read by the per-element lane,
+  which decides null-versus-band-error exactly as before. STR, SYM and BOOL
+  keep their per-element paths.
+- **A14.2 `-column-tags` (internal).** Engine type tag per column, in order,
+  no row decode. Used as the backend's fast-path predicate; it is
+  introspection, not a public surface row.
+- **A14.3 `-table-alias` (internal).** A shallow table over another table's
+  column vectors with replacement names, keyed by source column NAME (a
+  table's index order is not the add order). Ownership: one
+  `ray_retain` per column before `ray_table_add_col`, one release after, so
+  the alias holds one ref per column and the source handle is neither
+  modified nor closed; it may be closed while the alias lives. Duplicate or
+  missing replacement names raise the module class. This is the rename
+  control the query layer's join lane needs without a Janet round trip;
+  the engine still exposes no rename op.
+- **A14.4 observed limit (unchanged).** A zero-copy alias must be built from
+  a table whose columns the caller has not closed; the retained refs keep
+  the vectors alive, not the table block.
+- **A14.5 join key typing (A7.2 restated).** Aliased sides keep their source
+  storage type (I64 stays I64), where the decode path re-ingests every
+  column as F64. A join whose two key columns would MIX types therefore
+  takes the decode path on both sides, so the A7.2 fence never fires where
+  the pre-fix shape matched by value.
+
+This addendum row set is the v1.0.3 contract state.
+
 ## Sources
 
 - `libs/install-rayforce.sh` - the engine pin (tarball sha256) and
