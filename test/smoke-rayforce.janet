@@ -43,8 +43,8 @@
 # verify a candidate pin alongside the installed one (pin-upgrade runs both).
 (def expected-version (if-let [v (get (os/environ) "RAYFORCE_EXPECT_VERSION")]
                         (tuple ;(map scan-number (string/split "." v)))
-                        [3 0 1]))
-(assert-eq expected-version (rayforce/engine-version) "engine version 3.0.1")
+                        [3 0 2]))
+(assert-eq expected-version (rayforce/engine-version) "engine version 3.0.2")
 
 #==------------------------------------------------------------------------==#
 # Conformance checks
@@ -1013,7 +1013,7 @@
                  (string "C9e numeric agg on STR raises (" agg ")")))
 # :count-distinct is fenced for ALL input types (A14/F-S2): the
 # pinned engine's structural group path has no count-distinct
-# reducer - 0 per group on numeric input, nil on STR (v2.11.5).
+# reducer - 0 per group on numeric input, nil on STR (v3.0.2).
 (assert-raises (fn [] (rayforce/group c9e-g [c9e-id] [[c9e-s :count-distinct]]))
                "rayforce: group: :count-distinct is not served"
                "C9e count-distinct on STR raises")

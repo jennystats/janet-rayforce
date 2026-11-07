@@ -5,9 +5,10 @@ jpm native module, no Janet-side C build. It exposes the engine's raw
 plan plane: build a graph of table ops and expressions, execute it,
 read the result table back; parquet files read as flat I64/F64
 columns, bitwise-exact. The engine is pinned to
-[RayforceDB/rayforce](https://github.com/RayforceDB/rayforce) v3.0.1
-by a sha256-verified installer that also cross-checks the four ABI
-headers against their content hashes before every build.
+[RayforceDB/rayforce](https://github.com/RayforceDB/rayforce) v3.0.2
+by a sha256-verified installer that stages the engine's installed
+headers (upstream's `make install-headers`) and cross-checks the
+7-file staged tree against pinned content hashes before every build.
 
 Part of [Jenny Stats](https://github.com/jennystats), a home for Janet
 data and statistics packages. Jenny is just Janet.
@@ -75,7 +76,7 @@ import gives the same call sites with the `rayforce/` prefix.
   public function evaluates a string; the parquet reader never reaches
   it; only caller-constructed plan nodes feed the expression path.
 
-The behavioural specification is `specs/api-contract.md` (v1.0.1):
+The behavioural specification is `specs/api-contract.md` (v1.0.4):
 preconditions, ownership, the error taxonomy, null mapping and the
 boundary statement above, stated contractually.
 
@@ -85,8 +86,15 @@ The module binds the engine's C ABI over ffi, so it needs the pinned
 shared library (sha256-verified, idempotent):
 
 ```bash
-libs/install-rayforce.sh   # rayforce v3.0.1 -> ~/.local/lib/rayforce/
+libs/install-rayforce.sh   # rayforce v3.0.2 -> ~/.local/lib/rayforce/
 ```
+
+The same run stages the headers a C client needs into
+`~/.local/include` (upstream's `make install-headers` layout:
+`rayforce.h` at the root plus the `rayforce/` tree), so
+`-I~/.local/include -I~/.local/include/rayforce/src` is the complete
+include set. Override `HEADER_DEST` to stage elsewhere; only the
+`rayforce` paths under it are replaced.
 
 Module dependencies: [janet-num](https://github.com/jennystats/janet-num)
 (the packed f32 seam - packed handles widen to f64 columns - and the

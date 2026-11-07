@@ -1,32 +1,42 @@
 #!/bin/bash
 # Install the pinned librayforce.so for the rayforce janet module
 # (jennystats/rayforce.janet). Fetches the RayforceDB/rayforce tag
-# tarball, verifies sha256, CROSS-CHECKS the four vendored headers
-# (ops.h parquet.h heap.h rayforce.h - a drift is a hard failure
-# BEFORE any compile: the binding would compile against one ABI while
-# the pins document another), then builds the static
-# archive with this binding's own CFLAGS (portable: no -march=native, no
+# tarball, verifies sha256, stages the installed headers with the
+# engine's own `make install-headers` target (upstream #849/#1055) and
+# CROSS-CHECKS the staged tree against the pins (7/7 byte-identical; a
+# drift is a hard failure BEFORE any compile), proves a C client
+# compiles against the staged layout, then builds the static archive
+# with this binding's own CFLAGS (portable: no -march=native, no
 # fast-math family - every precise-numeric claim in the contract is
 # about THIS binary) and links the shared object from the release
 # objects. Idempotent; re-run rebuilds. Deps: gcc + make + curl + tar
 # (the engine itself is zero-dependency: libc, libm, pthreads).
 #
 # DEST may be overridden to install a second pin alongside the current
-# one: DEST=$HOME/.local/lib/rayforce-v301 ./install-rayforce.sh
+# one: DEST=$HOME/.local/lib/rayforce-v302 ./install-rayforce.sh
 # The module resolves $RAYFORCE_LIB first, then ~/.local/lib/rayforce.
+# HEADER_DEST (default ~/.local/include) takes the staged headers in the
+# upstream layout: rayforce.h at the root plus the rayforce/ tree, ready
+# for -I$HEADER_DEST -I$HEADER_DEST/rayforce/src.
 set -e
-VERSION="3.0.1"
+VERSION="3.0.2"
 URL="https://api.github.com/repos/RayforceDB/rayforce/tarball/v${VERSION}"
-TARBALL_SHA256="3a42998400ed4136558e65ec3386e26548994db76e0c3ed8f9b52f2c4487e335"
+TARBALL_SHA256="c769cbb3d884e40c35222a4a6599f23bf253fd065370ac24069de5fbf305c161"
 DEST="${DEST:-$HOME/.local/lib/rayforce}"
+HEADER_DEST="${HEADER_DEST:-$HOME/.local/include}"
 
-# Vendored-header pins (the ABI truth):
-#   upstream path -> sha256
+# Installed-header pins (the ABI truth) - paths are the `make
+# install-headers` layout under the stage root, which is what a C client
+# compiles against:
+#   staged path -> sha256
 declare -A HEADER_SHA=(
-  ["include/rayforce.h"]="c73c85c94f3dacdf9b437114f1794233823c50c0fb6d122cd925650e65bb5158"
-  ["src/ops/ops.h"]="a82e47e96bdea0794fc0123d26a29e2bc0497e92d83716b3ac902a4b239d0bd8"
-  ["src/io/parquet.h"]="0b34603ada9b8699226be029fc8ba7483be65293a908098b5937222d97acf290"
-  ["src/mem/heap.h"]="34a9ce98abc5c37c111b70ed77d41a321bd9f7b93f8d92d8657e51a2e96b68ae"
+  ["rayforce.h"]="7ff204a132dfe4f9a864c3364c862d14f023590f5e2ceee9bceb8662385637d7"
+  ["rayforce/include/rayforce/rayforce.h"]="7ff204a132dfe4f9a864c3364c862d14f023590f5e2ceee9bceb8662385637d7"
+  ["rayforce/src/ops/ops.h"]="a82e47e96bdea0794fc0123d26a29e2bc0497e92d83716b3ac902a4b239d0bd8"
+  ["rayforce/src/io/parquet.h"]="0b34603ada9b8699226be029fc8ba7483be65293a908098b5937222d97acf290"
+  ["rayforce/src/mem/heap.h"]="12ad34dbeab45aa61226207491cc21c92f8e999638c2ae972941eeffe25232c5"
+  ["rayforce/src/store/hnsw.h"]="18a631c80efa0a841cbd2fbe091727379ec306340f213e3708ccefd8651768c7"
+  ["rayforce/src/core/platform.h"]="f18d8913eb262a186546e2ee890e3c3504b07979eaed34c1ce699ea385507790"
 )
 
 # Release-object suffix. v2.11.5 emitted *.rel.o; v3.0.1 emits *.lib.o.
@@ -61,21 +71,46 @@ SRC="$TMP/rayforce"
 mkdir -p "$SRC"
 tar xzf "$TMP/rayforce.tar.gz" -C "$SRC" --strip-components=1
 
-# Vendored-header cross-check BEFORE building: the tarball's four headers
-# must byte-match the pinned copies. Any diff is a hard failure
-# with both hashes printed (compile-against-one-ABI hazard).
-for f in include/rayforce.h src/ops/ops.h src/io/parquet.h src/mem/heap.h; do
-  got="$(sha256sum "$SRC/$f" | awk '{print $1}')"
+# Stage the headers a C client needs (upstream #849/#1055). Staged into
+# TMP first, so the pins are checked before anything is installed. The
+# staged set is the public header plus the internals a binding includes
+# directly and the two those reach through their quoted includes.
+HEADERS="$TMP/install/include"
+make -C "$SRC" install-headers INSTALL_INCLUDE="$HEADERS" RAY_VERSION="$VERSION" >/dev/null
+
+# Installed-header cross-check BEFORE building: the staged tree must
+# byte-match the pins. Any diff is a hard failure with both hashes
+# printed (compile-against-one-ABI hazard).
+for f in rayforce.h rayforce/include/rayforce/rayforce.h \
+         rayforce/src/ops/ops.h rayforce/src/io/parquet.h \
+         rayforce/src/mem/heap.h rayforce/src/store/hnsw.h \
+         rayforce/src/core/platform.h; do
+  got="$(sha256sum "$HEADERS/$f" | cut -d' ' -f1)"
   want="${HEADER_SHA[$f]}"
   if [ "$got" != "$want" ]; then
-    echo "error: vendored-header drift: $f" >&2
-    echo "  tarball: $got" >&2
+    echo "error: installed-header drift: $f" >&2
+    echo "  staged: $got" >&2
     echo "  pin   : $want" >&2
-    echo "  (engine v$VERSION headers differ from the vendored-header pin - update the pins before building)" >&2
+    echo "  (engine v$VERSION headers differ from the installed-header pin - update the pins before building)" >&2
     exit 1
   fi
 done
-echo "vendored-header cross-check: 4/4 byte-identical to the pins"
+echo "installed-header cross-check: 7/7 byte-identical to the pins"
+
+# Prove the staged layout resolves for a C client: both include roots,
+# every header the staging set carries. Compile-only; the linked ABI
+# surface is asserted by the nm check after the link.
+cat > "$TMP/probe.c" <<'PROBE'
+#include <rayforce.h>
+#include "ops/ops.h"
+#include "io/parquet.h"
+#include "mem/heap.h"
+#include "store/hnsw.h"
+#include "core/platform.h"
+int rayforce_installed_headers_probe(void) { return 0; }
+PROBE
+cc -O2 -I"$HEADERS" -I"$HEADERS/rayforce/src" -c -o "$TMP/probe.o" "$TMP/probe.c"
+echo "installed-header probe: C client compiles against the staged layout"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 
@@ -86,18 +121,21 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 # (caught on the first installer run - the build log showed -O3
 # -march=native -fassociative-math).
 #
-# The single deviation from the v2.11.5 recipe is the last variable:
-# v3.0.1's new src/ops/colgather.c trips clang's -Werror=maybe-uninitialized
-# on `off` in acc_put (set through acc_pool_put via ray_data(a->pool), which
-# the analyzer cannot see through). gcc is clean; this box's cc is clang.
-# It is scoped to THAT ONE OBJECT through the Makefile's existing
-# FP_STRICT_<stem> per-file hook, and it changes diagnostics only - never
-# emitted code, optimisation or FP results. Re-evaluate at every pin bump;
-# remove when upstream fixes it or the analyzer catches up.
+# The single deviation from the upstream recipe is the last variable:
+# src/ops/colgather.c (new in v3.0.1) trips -Werror=maybe-uninitialized
+# on `off` in acc_put (set through acc_pool_put via ray_data(a->pool),
+# which the analyzer cannot see through). Re-verified on v3.0.2: the
+# warning still fires, now under BOTH clang and gcc 14.2 (probed
+# 2026-11-07: `cc -c -Wall -Wextra -Werror ... colgather.c` fails on
+# both; adding -Wno-maybe-uninitialized is clean on both). It is scoped
+# to THAT ONE OBJECT through the Makefile's existing FP_STRICT_<stem>
+# per-file hook, and it changes diagnostics only - never emitted code,
+# optimisation or FP results. Re-evaluate at every pin bump; remove when
+# upstream fixes it or the analyzer catches up.
 # CC is forced to the system compiler (cc): the upstream Makefile defaults
 # to clang, which a plain build-essential CI image does not carry - gcc
-# is the documented dependency (and gcc is clean on the colgather warning
-# the suppression above handles).
+# is the documented dependency (and the suppression above is needed there
+# too on 3.0.2).
 make -C "$SRC" lib -j"$JOBS" CC=cc RAY_VERSION="$VERSION" \
   RELEASE_CFLAGS='-fPIC -Wall -Wextra -Werror -Wstrict-prototypes -Wno-unused-parameter -std=c17 -O2' \
   'FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized'
@@ -124,4 +162,13 @@ fi
 mkdir -p "$DEST"
 install -m 644 "$TMP/librayforce.so" "$DEST/librayforce.so"
 echo "installed: $DEST/librayforce.so"
+
+# Install the staged headers beside the shared object's prefix. Only the
+# rayforce paths are replaced; anything else under HEADER_DEST (janet.h)
+# is left alone.
+mkdir -p "$HEADER_DEST"
+rm -rf "$HEADER_DEST/rayforce" "$HEADER_DEST/rayforce.h"
+cp -R "$HEADERS/." "$HEADER_DEST/"
+echo "headers  : $HEADER_DEST/rayforce.h and $HEADER_DEST/rayforce/"
 echo "usage    : (import jennystats/rayforce) - resolution: \$RAYFORCE_LIB, then ~/.local/lib/rayforce"
+echo "c client : cc -I$HEADER_DEST -I$HEADER_DEST/rayforce/src ..."

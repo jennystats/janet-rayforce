@@ -1,11 +1,11 @@
-# Spec - rayforce.janet public API contract (v1.0, engine v3.0.1)
+# Spec - rayforce.janet public API contract (v1.0, engine v3.0.2)
 
 Non-prose companion specification: the canonical signatures live in the
 module docstrings (with the module); this contract carries what
 signatures cannot - preconditions, ownership, error taxonomy, null
 mapping, UB boundaries. Binding truth: the module over `librayforce.so`
 built by `libs/install-rayforce.sh` from the pinned source; external
-truth: the Rayforce C ABI v3.0.1, pinned by the vendored headers
+truth: the Rayforce C ABI v3.0.2, pinned by the installed headers
 (Sources).
 
 ## 1. Surface (v1)
@@ -124,7 +124,7 @@ never the handle it passed.
 
 ## 4. Null mapping (both directions, per column type)
 
-Per-type null models in the engine (v3.0.1, `rayforce.h` null-model
+Per-type null models in the engine (v3.0.2, `rayforce.h` null-model
 comment) - there is NO per-row validity bitmap; `HAS_NULLS` is a
 vector-level attribute gate (`RAY_ATTR_HAS_NULLS`,
 `src/vec/vec.h:50`), never the null discriminator:
@@ -244,15 +244,18 @@ goal; WSL2 is the documented route.
 
 ## 11. Version coupling
 
-Pinned to engine v3.0.1 (tarball sha256 in
-`libs/install-rayforce.sh`; the v2.11.5 pin was re-verified to
-v3.0.1 and the surface re-passed - A13). The binding surface compiles against
-internal headers (`ops.h`, `parquet.h`,
-`heap.h`), content-hash pinned in the installer - a version
-bump requires: re-verify the tarball, diff the vendored headers,
-update the pins, and re-pass this contract. The public header
-has so far changed additively only; the internal DAG surface is the
-sharper coupling and the reason for the content-hash procedure.
+Pinned to engine v3.0.2 (tarball sha256 in
+`libs/install-rayforce.sh`; the pin procedure was re-run v3.0.1 ->
+v3.0.2 and the surface re-passed - A15). The binding surface compiles
+against internal headers (`ops.h`, `parquet.h`, `heap.h`), which the
+installer stages with upstream's `make install-headers` and pins at
+their INSTALLED paths (the `rayforce/` tree, plus `store/hnsw.h` and
+`core/platform.h`), so the pinned bytes are exactly the bytes a C
+client compiles against - a version bump requires: re-verify the
+tarball, re-stage, update the pins, and re-pass this contract. The
+public header has so far changed additively only; the internal DAG
+surface is the sharper coupling and the reason for the content-hash
+procedure.
 
 ## 12. Ownership protocol: Quint spec + stress loop
 
@@ -894,12 +897,73 @@ and ownership guarantee above stands.
 
 This addendum row set is the v1.0.3 contract state.
 
+## Addendum v1.0.4 (2026-11-07, engine pin v3.0.1 -> v3.0.2)
+
+### A15. Engine pin re-verification (section 11 procedure executed)
+
+No contract row changed.
+
+- **A15.1 ABI delta: additive only.** Exported-symbol diff between the
+  two built archives: 1989 -> 2053 symbols; 69 added, 5 removed
+  (`ray_enc_logical`, `ray_enc_lt`, `ray_strpat_compile`,
+  `ray_strpat_find`, `ray_strpat_find_raw` - the old pattern-based
+  string search, upstream #1052; the binding never called them). All
+  79 distinct `ray_*` symbols the module defbinds are still exported
+  (checked against the built `.so`). `include/rayforce.h` changed
+  additively: three watermark functions moved out of `heap.h` into the
+  public header (upstream #996). `src/mem/heap.h` gained the `fresh`
+  field in `ray_direct_hdr_t` (the pad keeps the header at 32 bytes),
+  allocation/decay helpers and DEBUG-only test seams, and lost the
+  watermark declarations; nothing there is on the binding's surface
+  (opaque pointers outside the one `ray_op_t` read). `src/ops/ops.h`
+  and `src/io/parquet.h` are byte-identical to v3.0.1, so `ray_op_t`
+  (the join-key fence's `out_type` read at offset 3) and the parquet
+  pin did not move.
+- **A15.2 Installed headers adopted (upstream #849/#1055, our
+  request).** The installer now runs the engine's own
+  `make install-headers`, pins the staged files at their installed
+  paths (`rayforce.h` at the stage root plus the six-file `rayforce/`
+  tree, 7/7 byte-identical) and compiles a C-client probe against the
+  two documented include roots before building anything. The four
+  vendored source-path pins retire: the same bytes are pinned, on the
+  layout a client actually compiles against, and the two transitive
+  headers (`store/hnsw.h`, `core/platform.h`) are covered too. The
+  staged tree also installs to `~/.local/include` for C clients.
+- **A15.3 Behaviour-change tripwires: none fires.** Upstream #1013
+  makes date/timestamp `'local` follow the time zone: neither the
+  binding nor the query translator uses `'local`, so the UTC-math
+  design stands. #1052 makes str-find a literal substring search and
+  removed the `ray_strpat_*` exports: the binding has no
+  string-search surface. #1044 changes the Rayfall evaluator's try
+  handler to `{code msg}`: `ray_eval_str` is deliberately not bound,
+  so no path in this stack reaches it. The result-shape items (#1027,
+  #954, #968, #1065) are covered by the smoke suites and the query
+  output-equivalence gates, which pass unchanged.
+- **A15.4 The one build-recipe deviation (section 9), re-dated.**
+  `src/ops/colgather.c` still trips `-Werror=maybe-uninitialized` on
+  `off` in `acc_put`; the v3.0.2 change to the file is a
+  cppcheck-suppress comment, not a fix. Probed on this box: gcc 14.2
+  reports it as well (the v3.0.1 note said gcc was clean), and both
+  compilers are clean with `-Wno-maybe-uninitialized`. The
+  per-object suppression stays; diagnostics only, as before.
+- **A15.5 The structural group path still has no count-distinct
+  reducer.** The fence and its message stand (version attribution
+  updated to v3.0.2). The group path validates the same
+  SUM/PROD/ALL/ANY/MIN/MAX/AVG/VAR/STDDEV/FIRST/LAST set; upstream's
+  count-distinct work (#1054) is in the planner/fused path, not this
+  node.
+- **A15.6 Section 12 re-verified on the new engine.** The smoke suite
+  (conformance, parquet bitwise, ownership net-0 stress, guards), the
+  janet-query rayforce smokes and the query suites pass on v3.0.2.
+
+This addendum row set is the v1.0.4 contract state.
+
 ## Sources
 
 - `libs/install-rayforce.sh` - the engine pin (tarball sha256) and
-  the vendored-header content hashes (the ABI truth, cross-checked
+  the installed-header content hashes (the ABI truth, cross-checked
   before every build).
-- The Rayforce C ABI v3.0.1 (the external truth).
+- The Rayforce C ABI v3.0.2 (the external truth).
 - `specs/ownership.qnt` - the checked ownership protocol (section 12).
 - The sibling contracts in this stack (janet-duckdb, janet-xgboost) -
   the specification template and the guard-taxonomy precedent.

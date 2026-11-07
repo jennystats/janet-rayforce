@@ -17,9 +17,10 @@
 # Platform (contract section 10): Linux x86_64 built and tested;
 # macOS compile-plausible, unverified; Windows route is WSL2.
 #
-# Pinned C ABI: RayforceDB/rayforce v2.11.5 (tarball sha256 in the
-# api-census; installer libs/install-rayforce.sh cross-checks the four
-# vendored headers before every build). This is a raw plan-plane
+# Pinned C ABI: RayforceDB/rayforce v3.0.2 (tarball sha256 in the
+# installer; it stages the installed headers with upstream's
+# `make install-headers` and cross-checks the 7-file staged tree before
+# every build). This is a raw plan-plane
 # binding - no convenience wrappers (the janet-query boundary);
 # no query-layer features.
 #
@@ -421,7 +422,7 @@
 
 (defn/typed engine-version {:args [] :ret :tuple} []
   "The linked engine version as [major minor patch] (the smoke pins
-  [2 11 5] on the installer's build)."
+  [3 0 2] on the ratified v3.0.2 engine build)."
   [(ray_version_major) (ray_version_minor) (ray_version_patch)])
 
 #==------------------------------------------------------------------------==#
@@ -811,7 +812,7 @@ column back so the per-element lane can tell a null from a band error."
 # type-agnostic (STR verified byte-correct vs duckdb). :count-distinct
 # is fenced off entirely (F-S2): the pinned engine's structural group
 # path has no count-distinct reducer - it emits 0 per group on numeric
-# input and nil on STR (v2.11.5); the working per-group count-distinct
+# input and nil on STR (v3.0.2); the working per-group count-distinct
 # lives in the query-language path only.
 (def AGG-NUMERIC-ONLY {:sum true :avg true :stddev true :var true})
 (def AGG-NUMERIC-TYPES {RAY-I64 true RAY-F64 true})
@@ -1067,7 +1068,7 @@ column back so the per-element lane can tell a null from a band error."
     # any engine call - the A8.4/A8.5 boundary discipline. Same fence
     # shape as the A7 join-key fence (unknown out_types pass through).
     (when (= ak :count-distinct)
-      (error "rayforce: group: :count-distinct is not served by the pinned engine's structural group path (silently returns 0 per group on numeric input, nil on STR - engine v2.11.5, addendum A14); compose distinct + group :count across two graphs instead"))
+      (error "rayforce: group: :count-distinct is not served by the pinned engine's structural group path (silently returns 0 per group on numeric input, nil on STR - engine v3.0.2, addendum A14); compose distinct + group :count across two graphs instead"))
     (when (get AGG-NUMERIC-ONLY ak)
       (def t (-op-out-type (first pair)))
       (unless (or (get AGG-NUMERIC-TYPES t) (= t 0))
