@@ -94,7 +94,11 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 # FP_STRICT_<stem> per-file hook, and it changes diagnostics only - never
 # emitted code, optimisation or FP results. Re-evaluate at every pin bump;
 # remove when upstream fixes it or the analyzer catches up.
-make -C "$SRC" lib -j"$JOBS" RAY_VERSION="$VERSION" \
+# CC is forced to the system compiler (cc): the upstream Makefile defaults
+# to clang, which a plain build-essential CI image does not carry - gcc
+# is the documented dependency (and gcc is clean on the colgather warning
+# the suppression above handles).
+make -C "$SRC" lib -j"$JOBS" CC=cc RAY_VERSION="$VERSION" \
   RELEASE_CFLAGS='-fPIC -Wall -Wextra -Werror -Wstrict-prototypes -Wno-unused-parameter -std=c17 -O2' \
   'FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized'
 
