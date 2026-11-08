@@ -996,8 +996,8 @@
 (assert-eq @[2 5 6] (sorted (c9d-cols "id")) "C9d join ids multiset")
 (:close c9d-res) (:close c9d-g) (:close c9d-t2) (:close c9d-t)
 
-# C9e: the agg-input type fence (v0.1.1, addendum A14 - STR battery
-# F-S1, red-observed pre-fix: :sum over a STR column returned
+# C9e: the agg-input type fence (v0.1.1, addendum A14): before the
+# fence, :sum over a STR column returned
 # [2 0 0 0 97 97 0], the same string summing to two different values
 # in one execution, deterministic, exit 0). The numeric reducers take
 # I64/F64 input ops only; the fence fires at plan-build time, before

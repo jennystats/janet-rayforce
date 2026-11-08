@@ -387,7 +387,7 @@ watch-item is withdrawn (no defect). ownership.qnt is untouched
 12's stress-loop claim now reads: every cycle nets zero, no
 exceptions.
 
-### A5. Parquet interchange caveat (new finding)
+### A5. Parquet interchange caveat
 
 The engine's parquet reader REJECTS duckdb-1.5.6-written files with
 MIXED null/non-null columns ("excess definition levels" - tested
@@ -555,7 +555,7 @@ documented boundary, with regression checks in the smoke suite.
   smoke fixture pins the engine's exact text. Upstream watch-note:
   the reader's null-count and dictionary-page paths.
 
-**Addendum v1.0.1 STAMP - CLOSED 2026-10-17**: the v2-round findings
+**Addendum v1.0.1 STAMP - CLOSED 2026-10-17**: the v2-round defects
 are dispositioned - each fixed or documented-with-regression-checks
 per the smallest-correct-change rule. Carried forward as known v1
 limits: the bound-table composition limits (aggregation over a

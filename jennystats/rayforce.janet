@@ -252,7 +252,7 @@
   ray_obj_type reads the block's type tag (byte 18 of the 32-byte
   ray_t header, rayforce.h:190-227), so a graph pointer (or any
   other object) under a :table kind raises here instead of reading
-  silent garbage from the engine (red-observed: table-nrows returned
+  silent garbage from the engine (observed: table-nrows returned
   0 over a graph pointer)."
   (unless (and (or (struct? x) (table? x))
                (= :pointer (type (get x :ptr)))
@@ -266,7 +266,7 @@
 
 # Graph provenance (addendum A9):
 # the ABI affords no graph introspection (no tag, no registry query -
-# ops.h:508-533). The CR-6 token was a plain readable field, so a
+# ops.h:508-533). The token was a plain readable field, so a
 # forged handle with the copied token reached the engine (exit 139
 # over a table pointer, silent garbage over a freed one). The
 # registry now maps every LIVE graph pointer to its handle and
@@ -298,12 +298,12 @@
 
 (defn/typed check-graph {:args [:any] :ret :any} [x]
   "Type-guard class: every graph/op-taking fn raises on a wrong-kind,
-  closed or non-handle argument (C13, the close-then-use UB fence).
+  closed or non-handle argument (the close-then-use UB fence).
   Provenance (addendum A9): the
-  handle must BE the registered handle for its pointer - the CR-6
+  handle must BE the registered handle for its pointer - the
   token was a plain readable field, and a forged :kind :graph
   struct with the copied token over a table pointer reached ray_scan
-  and SEGFAULTED (exit 139, red-observed in a subprocess); over a
+  and SEGFAULTED (exit 139, observed in a subprocess); over a
   FREED pointer it ran to completion with silent garbage (UAF). No
   ABI fact distinguishes a graph block, so registry identity is the
   fence: no fact used here is copyable off a genuine handle. Boundary
@@ -371,11 +371,11 @@
 
 (defn/typed make-graph {:args [:any :any] :ret :table} [ptr tbl-ptr]
   "A graph handle: raw pointer, :kind :graph, idempotent :close
-  (ray_graph_free - frees the DAG; the bound table survives, census
-  cell c5). Carries the provenance token (check-graph, addendum A9)
+  (ray_graph_free - frees the DAG; the bound table survives).
+  Carries the provenance token (check-graph, addendum A9)
   and NOTHING load-bearing: the op registry, the added-table registry
   and the bound pointer live module-side in graph-state (A10.2, the
-  scan column validation source of addendum A8/F-v2-D2). Boundary
+  scan column validation source of addendum A8). Boundary
   (addendum A11): graph-state is module-level and
   exported in the module environment, so in-process code can reach
   and mutate it through module/cache - the guards bind API misuse,
@@ -583,7 +583,7 @@ column back so the per-element lane can tell a null from a band error."
   names (equal-length array of strings) name array/packed input;
   struct input is named by its keys. All columns must be equal
   length - ragged input raises, never reaches the engine (it accepts
-  ragged adds silently - the census stress finding, cell R4)."
+  ragged adds silently)."
   [cols &opt names]
   (default names nil)
   (def pairs
@@ -608,7 +608,7 @@ column back so the per-element lane can tell a null from a band error."
             (errorf "rayforce: table-from-columns: packed-like input has :ptr but is missing :%s - the packed handle requires :ptr, :nrow and :ncol" (string k))))
         # the container fence: a struct VALUE
         # that is not a column array iterates as bytes/values and builds
-        # silent garbage columns (red-observed: "abc" -> @[97 98 99]) -
+        # silent garbage columns (observed: "abc" -> @[97 98 99]) -
         # validate the container kind, exactly like array-input elements.
         (each [k v] (pairs cols)
           (unless (or (array? v) (tuple? v))
@@ -617,9 +617,9 @@ column back so the per-element lane can tell a null from a band error."
         (seq [p :in (pairs cols)] [(string (first p)) (last p)]))
       (or (array? cols) (tuple? cols))
       (do
-        # the names guard, BEFORE any pair building:
-        # blocking): a names array shorter than cols made map stop at the
-        # shorter side - columns silently DROPPED, exit 0 (red-observed:
+        # the names guard comes BEFORE any pair building: a names array
+        # shorter than cols made map stop at the
+        # shorter side - columns silently DROPPED, exit 0 (observed:
         # 2 columns + ["a"] -> a 1-column table). The old post-map guard
         # was unreachable (pairs already truncated). Names must match the
         # column count exactly and be strings.
@@ -640,7 +640,7 @@ column back so the per-element lane can tell a null from a band error."
           # the duplicate-names fence: the engine
           # accepts duplicate add_col names, but its two read paths
           # then disagree (table-column resolves the FIRST, table-columns
-          # keeps the LAST - red-observed) - a silent divergence at the
+          # keeps the LAST - observed) - a silent divergence at the
           # naming boundary; the typed-contract model requires unique
           # names (R tolerates duplicates; this stack does not).
           (def seen @{})
@@ -653,8 +653,8 @@ column back so the per-element lane can tell a null from a band error."
       (or (buffer? cols) (bytes? cols))
       (error "rayforce: expected packed f32 handle {:ptr :n :nrow :ncol}, got buffer - the seam takes a janet-num pack handle, not a raw buffer")
       (errorf "rayforce: table-from-columns: expected columns, packed handle or struct, got %s" (type cols))))
-  # the R4 guard: equal length Janet-side (the engine accepts ragged
-  # adds silently - red-observed: [[3-row],[2-row]] built a 3-row table
+  # the ragged-column guard: equal length Janet-side (the engine accepts ragged
+  # adds silently - observed: [[3-row],[2-row]] built a 3-row table
   # with a phantom 0 value); validate_rectangular is the engine-side
   # belt behind it.
   (when (empty? pairs) (error "rayforce: table-from-columns: no columns"))
@@ -667,7 +667,7 @@ column back so the per-element lane can tell a null from a band error."
   # consuming row): the wrapper keeps NO ref across adds - it
   # continues from each return; on error the engine consumed the ref
   # and the wrapper drops the cell (raises, never releases the stale
-  # handle - R1's counterfactual demonstrates the alternative).
+  # handle; the alternative is a stale release).
   (var t (err! (ray_table_new (length pairs)) "table new"))
   # error-path cleanup: a raise inside
   # the loop previously stranded the accumulated engine table; the
@@ -675,7 +675,7 @@ column back so the per-element lane can tell a null from a band error."
   # the pending column vec (the engine retains the caller's column
   # ref per section 2, so it is ours on every path), and the table
   # ONLY when the raise is not the consuming add-col call (a failed
-  # add_col consumes the table ref - the S3 trace).
+  # add_col consumes the table ref).
   (var pending nil)
   (var t-consumed false)
   (try
@@ -771,7 +771,7 @@ column back so the per-element lane can tell a null from a band error."
   or nil when the table has no such column. get_col returns a
   BORROWED ref (source table.c:211-225 - the census's owned row
   misattributed the header's totality docs; releasing it corrupts the
-  heap, red-observed as a phantom third column in the next build) -
+  heap, observed as a phantom third column in the next build) -
   the copy-out releases nothing."
   (check-table tbl)
   (def id (ray_sym_find name (length name)))
@@ -806,7 +806,7 @@ column back so the per-element lane can tell a null from a band error."
 (def JOIN-TYPES {:inner 0 :left 1 :full 2 :anti 3})
 # Per-agg input typing (addendum A14): the numeric
 # reducers reinterpret a non-numeric payload as numbers and silently
-# return garbage (red-observed :sum over STR: [2 0 0 0 97 97 0] - the
+# return garbage (observed :sum over STR: [2 0 0 0 97 97 0] - the
 # same string summing to two values in one execution), so they take
 # I64/F64 input ops only. :count/:first/:last/:min/:max are
 # type-agnostic (STR verified byte-correct vs duckdb). :count-distinct
@@ -823,11 +823,11 @@ column back so the per-element lane can tell a null from a band error."
   (seq [op :in ops] (get (check-op op g) :id)))
 
 (defn/typed -check-scan-col {:args [:any :string :string] :ret :nil} [tbl-ptr name what]
-  "The malformed-plan guard (addendum A8, battery v2 F-v2-D2): the
+  "The malformed-plan guard (addendum A8): the
   engine only marks an unknown-column scan OP_FLAG_INVALID_SCAN
   (ops.h:381) and just the filter/distinct executor surfaces it - a
   select projection silently yields an empty or narrowed table
-  (red-observed). The wrapper validates the column against the source
+  (observed). The wrapper validates the column against the source
   table before the engine call, so a typo'd projection raises the
   validation class at scan time (contract section 3's totality)."
   (def id (ray_sym_find name (length name)))
@@ -836,8 +836,8 @@ column back so the per-element lane can tell a null from a band error."
 
 (defn graph
   "A graph handle over a table (the table is borrowed - the engine
-  retains it; graph :close frees the DAG and releases it, census cell
-  c5: the table survives)."
+  retains it; graph :close frees the DAG and releases it; the table
+  survives)."
   [tbl]
   (check-table tbl)
   (def g (ray_graph_new (get tbl :ptr)))
@@ -853,7 +853,7 @@ column back so the per-element lane can tell a null from a band error."
   (def tid (ray_graph_add_table (get g :ptr) (get tbl :ptr)))
   (when (= 65535 tid) (error "rayforce: add-table failed: engine returned error sentinel"))
   # track the registry module-side (A10.2 - a public mutable field was
-  # injectable, battery v4 F-v4-F1): sequential from 0, red-probed on
+  # injectable): sequential from 0, checked on
   # this pin (b->0, c->1) so scan-table can validate its column name
   (def ts (get (get graph-state (get g :ptr)) :tables))
   (unless (= tid (length ts))
@@ -863,7 +863,7 @@ column back so the per-element lane can tell a null from a band error."
 
 (defn/typed scan {:args [:any :string] :ret :any} [g name]
   "A column op: the named column of the graph's bound table. The name
-  is validated against the bound table (addendum A8/F-v2-D2) - the
+  is validated against the bound table (addendum A8) - the
   engine only flags unknown columns for the filter/distinct executor
   and a select projection would silently yield an empty/narrowed
   table. The bound-table rule is the surface semantic: a column of an
@@ -875,7 +875,7 @@ column back so the per-element lane can tell a null from a band error."
 (defn/typed scan-table {:args [:any :number :string] :ret :any} [g tid name]
   "A column op: the named column of an added table (tid from
   add-table). The name is validated against the registered table
-  (addendum A8/F-v2-D2)."
+  (addendum A8)."
   (check-graph g)
   (unless (and (>= tid 0) (<= tid 65534) (= tid (math/round tid)))
     (errorf "rayforce: scan-table: table id must be an integer in [0, 65534], got %q" tid))
@@ -899,12 +899,12 @@ column back so the per-element lane can tell a null from a band error."
 
 (defn/typed const-i64 {:args [:any :any] :ret :any} [g v]
   "An i64 scalar constant op. The value must be an exact integer INSIDE
-  the double-safe band [-2^53, 2^53] (addendum A8, battery v2
-  F-v2-3/D5): beyond it the janet number model cannot represent the
+  the double-safe band [-2^53, 2^53] (addendum A8): beyond it the
+  janet number model cannot represent the
   value exactly and the ffi conversion leaks a raw core error
-  (red-observed at 2^53+1 and 1e300) - enter out-of-band i64 values
+  (observed at 2^53+1 and 1e300) - enter out-of-band i64 values
   through the parquet/typed-source path. Argument typing is manual
-  here (addendum A9, F-v3-3): the defn/typed contract check raised
+  here (addendum A9): the defn/typed contract check raised
   without the module prefix."
   (unless (number? v)
     (errorf "rayforce: const-i64: expected a number, got %s" (type v)))
@@ -915,9 +915,8 @@ column back so the per-element lane can tell a null from a band error."
 
 (defn/typed const-bool {:args [:any :any] :ret :any} [g v]
   "A boolean scalar constant op (nil reads as false; any other
-  non-boolean value raises the type-guard class - addendum A8,
-  battery v2 D4: a string previously built a TRUE constant
-  silently)."
+  non-boolean value raises the type-guard class (addendum A8) - a
+  string previously built a TRUE constant silently)."
   (unless (or (nil? v) (boolean? v))
     (errorf "rayforce: const-bool: expected a boolean or nil (nil reads as false), got %s" (type v)))
   (-ok-op (ray_const_bool (get (check-graph g) :ptr) (not (nil? v))) g "const-bool"))
@@ -974,7 +973,7 @@ column back so the per-element lane can tell a null from a band error."
 (defn/typed select {:args [:any :any :any] :ret :any} [g input cols]
   "The projection structural op: the table op `input` narrowed to the
   column ops `cols` (same-graph ops, order preserved). cols must be a
-  NON-EMPTY array of ops (addendum A8, battery v2 F-v2-D2): a nil,
+  NON-EMPTY array of ops (addendum A8): a nil,
   non-array or empty cols previously built a plan whose execution
   silently returned an empty table (the engine flags nothing on the
   projection path) - contract section 3's \"projecting nothing\"
@@ -1000,7 +999,7 @@ column back so the per-element lane can tell a null from a band error."
     (errorf "rayforce: sort: keys must be an array of ops, got %s" (type keys)))
   (def n (length keys))
   (unless (pos? n) (error "rayforce: sort: no keys"))
-  # optional plan-array guards (battery v6 reference F-R1): a
+  # optional plan-array guards: a
   # non-array descs/nulls-first previously reached the length match
   # below and leaked a raw core error; they join the A8.4 family.
   (when descs
@@ -1013,7 +1012,7 @@ column back so the per-element lane can tell a null from a band error."
   (def nf (or nulls-first (seq [_ :range [0 n]] false)))
   (unless (and (= n (length d)) (= n (length nf)))
     (errorf "rayforce: sort: descs/nulls-first must match the key count (%d)" n))
-  # per-element boolean fence (addendum A9, battery v3 F-v3-D6):
+  # per-element boolean fence (addendum A9):
   # non-boolean elements were coerced through truthiness; the
   # const-bool precedent rejects them.
   (each [arr what] [[d "descs"] [nf "nulls-first"]]
@@ -1030,16 +1029,16 @@ column back so the per-element lane can tell a null from a band error."
 (defn/typed -op-out-type {:args [:any] :ret :any} [op]
   "The inferred output type of an op (ray_op_t.out_type, ops.h:391 -
   populated at construction: 7 F64, 5 I64, 1 BOOL, 98 TABLE). The
-  join-key fence's evidence source (battery v1 DeepSeek F1): the
-  engine compares join keys by RAW PAYLOAD, so mixed key types
-  silently drop non-zero matches (red-observed: only 0 matched); the
-  row-wise expression path coerces correctly (battery v1 Flash p3d)."
+  join-key fence's reason: the engine compares join keys by RAW
+  PAYLOAD, so mixed key types silently drop non-zero matches
+  (observed: only 0 matched); the row-wise expression path coerces
+  correctly."
   (get (ffi/read (ffi/struct :uint16 :uint8 :uint8 :int8) (get op :id)) 3))
 
 (defn/typed group {:args [:any :any :any] :ret :any} [g group-keys aggs]
   "The group-by structural op: group-keys is an array of same-graph
   column ops; aggs is an array of [input-op agg-keyword] pairs (the
-  census v1 agg set: :sum :avg :min :max :count :count-distinct :first
+  agg set: :sum :avg :min :max :count :count-distinct :first
   :last :stddev :var). Input typing (addendum A14): the numeric
   reducers (:sum :avg :stddev :var) take I64/F64 input ops only; a
   non-numeric input raises before any engine call; :count-distinct is
@@ -1047,7 +1046,7 @@ column back so the per-element lane can tell a null from a band error."
   type-agnostic aggs (:count :first :last :min :max) accept any input
   type. (The parameter is named group-keys: a `keys`
   param shadowed the core fn and leaked a raw janet error from the
-  unknown-agg guard - battery v1 DeepSeek F4.)"
+  unknown-agg guard.)"
   (check-graph g)
   (unless (or (array? group-keys) (tuple? group-keys))
     (errorf "rayforce: group: keys must be an array of ops, got %s" (type group-keys)))
@@ -1062,7 +1061,7 @@ column back so the per-element lane can tell a null from a band error."
     (unless (get AGG-OPS ak)
       (errorf "rayforce: group: unknown agg %q (census v1 set: %q)"
               ak (sorted (keys AGG-OPS))))
-    # the agg-input type fence (A14, STR battery F-S1 - blocking): the
+    # the agg-input type fence (A14): the
     # numeric reducers reinterpret a STR payload as numbers, silently
     # (deterministic, exit 0); the fence fires at plan-build time, before
     # any engine call - the A8.4/A8.5 boundary discipline. Same fence
@@ -1115,11 +1114,10 @@ column back so the per-element lane can tell a null from a band error."
   (def rk (-op-ids rkeys g))
   (unless (= (length lk) (length rk))
     (errorf "rayforce: join: key count mismatch (%d vs %d)" (length lk) (length rk)))
-  # the cross-type key fence (battery v1 DeepSeek F1, blocking): the
-  # engine compares join keys by raw payload, so an F64-built vs
-  # I64-loaded key pair silently drops every non-zero match
-  # (red-observed: rows=1 where 2 were expected). Row-wise
-  # expressions coerce correctly (Flash p3d) - the JOIN KEY path does
+  # the cross-type key fence: the engine compares join keys by raw
+  # payload, so an F64-built vs I64-loaded key pair silently drops
+  # every non-zero match (observed: rows=1 where 2 were expected).
+  # Row-wise expressions coerce correctly - the JOIN KEY path does
   # not. Same-type keys pairwise; unknown (0) out_types pass through.
   (for i 0 (length lkeys)
     (def lt (-op-out-type (get lkeys i)))
@@ -1159,10 +1157,10 @@ column back so the per-element lane can tell a null from a band error."
   "Execute the plan: the result table handle (owned; the engine's
   error object - malformed plans raise typed errors, never crash -
   is extracted, freed and raised). The graph stays usable; the result
-  survives graph close (census cell c5). The root must be table-node
-  shaped (battery v1 Flash F2): a bare column op as root returns the
+  survives graph close. The root must be table-node shaped: a bare
+  column op as root returns the
   engine's bare VECTOR, which read as a table is an empty result -
-  silently wrong, now a validation raise (red-observed: nrows=0,
+  silently wrong, now a validation raise (observed: nrows=0,
   ncols=0, no error; select/group/filter roots are table nodes)."
   (check-graph g)
   (def result (err! (ray_execute (get g :ptr) (get (check-op root g) :id)) "execute"))
