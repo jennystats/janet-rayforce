@@ -21,9 +21,10 @@
 //     lifetime is bounded by the owning table handle, and
 //     ray_retain promotes one to an owned ref (the engine-side merge);
 //   - ray_vec_concat returns a NEW owned vec without consuming its
-//     inputs (contract addendum A22.3): the merge retains or borrows
-//     the source column, concatenates, and releases the old
-//     accumulator;
+//     inputs (the janet-query contract addendum A22.3,
+//     engines/janet-query/specs/api-contract.md - the multi-batch
+//     merge primitive): the merge retains or borrows the source
+//     column, concatenates, and releases the old accumulator;
 //   - a decoded STR value is COPIED into a Janet-owned string; the
 //     engine's string pool stays with the table handle, so the copy
 //     survives the handle's close and carries no engine refcount
@@ -257,8 +258,8 @@ module rayforceOwnership {
   }
 
   // ray_retain: promote a borrowed ref to an owned one (the caller may
-  // then pass it to a consuming call or release it). The A22.3 merge
-  // path retains the first batch's column this way.
+  // then pass it to a consuming call or release it). The janet-query
+  // A22.3 merge path retains the first batch's column this way.
   action retainBorrowed(r) = all {
     r.in(borrowed),
     live' = live.union(Set(r)),
@@ -273,7 +274,7 @@ module rayforceOwnership {
   }
 
   // ray_vec_concat(acc, col) returns a NEW owned vector and consumes
-  // NEITHER input (A22.3). The binding releases the old accumulator
+  // NEITHER input (janet-query A22.3). The binding releases the old accumulator
   // after the merge; the source column stays borrowed from its table.
   action concatMerge(acc, col, out) = all {
     acc.in(live),
@@ -478,7 +479,7 @@ module rayforceOwnership {
       .expect(inv.and(borrowed == Set()).and(dead != Set()).and(janetOwned != Set()))
   }
 
-  // Engine-side merge cycle (A22.3): batch-1 column borrowed and
+  // Engine-side merge cycle (janet-query A22.3): batch-1 column borrowed and
   // retained to an owned accumulator; batch-2 column borrowed; concat
   // returns a new owned vector and the old accumulator is released.
   run retainConcatCycle = {
