@@ -132,13 +132,18 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 # per-file hook, and it changes diagnostics only - never emitted code,
 # optimisation or FP results. Re-evaluate at every pin bump; remove when
 # upstream fixes it or the analyzer catches up.
+# src/ops/agg_engine.c joins the list 2026-11-09: 'cur[0]' may be used
+# uninitialized at line 8712 (agg_run_collect_fn) - clean on the local
+# gcc 14.2, fatal on the GitLab runner's gcc (janet-query gate:jpm,
+# pipeline 3043782823, twice; same class, same per-file scoping).
 # CC is forced to the system compiler (cc): the upstream Makefile defaults
 # to clang, which a plain build-essential CI image does not carry - gcc
 # is the documented dependency (and the suppression above is needed there
 # too on 3.0.2).
 make -C "$SRC" lib -j"$JOBS" CC=cc RAY_VERSION="$VERSION" \
   RELEASE_CFLAGS='-fPIC -Wall -Wextra -Werror -Wstrict-prototypes -Wno-unused-parameter -std=c17 -O2' \
-  'FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized'
+  'FP_STRICT_src/ops/colgather:=-Wno-maybe-uninitialized' \
+  'FP_STRICT_src/ops/agg_engine:=-Wno-maybe-uninitialized'
 
 # Link the shared object from the release objects. A glob that matches
 # nothing must be a hard failure, not an empty archive: guard the count.
