@@ -21,8 +21,8 @@
 //     lifetime is bounded by the owning table handle, and
 //     ray_retain promotes one to an owned ref (the engine-side merge);
 //   - ray_vec_concat returns a NEW owned vec without consuming its
-//     inputs (the janet-query contract addendum A22.3,
-//     engines/janet-query/specs/api-contract.md - the multi-batch
+//     inputs (janet-query's api-contract addendum A22.3, v1.2, the
+//     published janet-query repo - the multi-batch
 //     merge primitive): the merge retains or borrows the source
 //     column, concatenates, and releases the old accumulator;
 //   - a decoded STR value is COPIED into a Janet-owned string; the

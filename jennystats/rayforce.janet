@@ -4,8 +4,8 @@
 # Public package: janet-rayforce. License: AGPLv3 (see LICENSE). The
 # bound engine is MIT (vendored headers keep upstream's notice; the
 # engine ships whole in this binary - see the embedding statement).
-# Repo: hot-tools (module + installer); the behavioural spec is
-# specs/api-contract.md in the janet-data-engines engines tree.
+# Repo: github.com/jennystats/janet-rayforce; the behavioural spec is
+# specs/api-contract.md in this repository.
 #
 # Embedding statement (contract section 8, from birth): this module
 # embeds the FULL Rayforce engine - the Rayfall string evaluator is in
@@ -26,10 +26,14 @@
 #
 # Lib resolution: $RAYFORCE_LIB -> ~/.local/lib/rayforce/librayforce.so
 # -> dlopen search. Import fails actionably if none loads.
+# janet-num (optional, the packed f64 seam only): lazy $JANET_NUM_LIB ->
+# ~/.local/lib/janet-num/libjn.so -> dlopen search; the rest of the
+# module works without it, and the seam's error names the kernel floor.
 #
 # Public API (behavioural spec: the api-contract):
 #   (engine-version)                    -> [major minor patch]
 #   (table-from-columns cols &opt names) -> table handle
+#   (table-from-packed packed &opt names) -> table handle
 #   (table-nrows tbl) / (table-ncols tbl) -> int
 #   (table-column tbl name)             -> array of values | nil
 #   (table-columns tbl)                 -> struct name -> array
@@ -73,7 +77,10 @@
   string, the parquet reader never reaches it, only caller-constructed
   plan nodes feed the expression path (smoke cell C14 enforces the
   unbound state). Platform: Linux x86_64 built and tested; macOS
-  compile-plausible, unverified; Windows route WSL2.")
+  compile-plausible, unverified; Windows route WSL2. The f64 packed
+  seam (table-from-packed) reads one janet-num pack-columns-f64 handle
+  in a single C gather pass, copy-on-ingest (contract A16.1): the packed
+  handle stays the caller's and may be dropped after return.")
 
 #==------------------------------------------------------------------------==#
 # Lib resolution (probe BEFORE the ffi context - the duckdb D1 lesson)
@@ -110,7 +117,7 @@
 
 # Error objects (census 3; rayforce.h:260-266). ray_error_msg is
 # exported by the archive but undeclared in the public header (a
-# census gap recorded in the outcome); it is the message half of the
+# census gap); it is the message half of the
 # contract's error text - read via a char** cell, nil when unset.
 (ffi/defbind ray_err_from_obj :int [err :ptr])
 (ffi/defbind ray_err_code :string [err :ptr])
@@ -128,6 +135,7 @@
 (ffi/defbind ray_vec_new :ptr [type :int8 capacity :int64])
 (ffi/defbind ray_vec_from_raw :ptr [type :int8 data :ptr count :int64])
 (ffi/defbind ray_vec_append_raw :ptr [vec :ptr src :ptr count :int64])
+ (ffi/defbind ray_vec_concat :ptr [a :ptr b :ptr])
 (ffi/defbind ray_vec_set_null :void [vec :ptr idx :int64 is-null :bool])
 (ffi/defbind ray_vec_is_null :bool [vec :ptr idx :int64])
 (ffi/defbind ray_table_new :ptr [ncols :int64])
@@ -275,7 +283,7 @@
 # different value). Cleared on :close. The token stays as a second
 # fence.
 #
-# A10 shape decision (addendum A10): the fence
+# A10 shape decision: the fence
 # state itself moved MODULE-SIDE - graph-state (ops registry, added-
 # table registry, bound pointer) is keyed by the graph pointer, so no
 # public handle field is load-bearing for any check (a field put can
@@ -286,7 +294,7 @@
 # pass the identity fence - mutable-table identity is the one
 # unforgeable fact, and the handles stay tables to keep it.
 #
-# A11 boundary (addendum A11): graph-registry/graph-state
+# A11 boundary: graph-registry/graph-state
 # are top-level defs, hence exported in the module environment -
 # in-process code CAN reach and mutate them through module/cache, so
 # the state is not private against that caller; the guards bind misuse
@@ -299,9 +307,9 @@
 (defn/typed check-graph {:args [:any] :ret :any} [x]
   "Type-guard class: every graph/op-taking fn raises on a wrong-kind,
   closed or non-handle argument (the close-then-use UB fence).
-  Provenance (addendum A9): the
-  handle must BE the registered handle for its pointer - the
-  token was a plain readable field, and a forged :kind :graph
+  Provenance (addendum A9): the handle must BE the registered handle
+  for its pointer - the token was a plain readable field, and a
+  forged :kind :graph
   struct with the copied token over a table pointer reached ray_scan
   and SEGFAULTED (exit 139, observed in a subprocess); over a
   FREED pointer it ran to completion with silent garbage (UAF). No
@@ -341,7 +349,8 @@
   # op-id registry (addendum A9): shape-only let a
   # foreign block under a genuine graph reach the engine's op paths
   # (silently wrong values observed) - the op id must be a
-  # constructor-registered op of THIS graph. A10: the registry is MODULE-SIDE (graph-state), so a
+  # constructor-registered op of THIS graph. A10: the registry is
+  # MODULE-SIDE (graph-state), so a
   # field put on the public handle can no longer inject membership -
   # a caller mutating g's fields changes nothing any check reads.
   (def st (get graph-state (get g :ptr)))
@@ -379,8 +388,8 @@
   (addendum A11): graph-state is module-level and
   exported in the module environment, so in-process code can reach
   and mutate it through module/cache - the guards bind API misuse,
-  not that caller (contract A11). Destructor provenance (A10.1,
-  addendum A10.1): the closure frees the pointer CAPTURED AT
+  not that caller (contract A11). Destructor provenance (A10.1):
+  the closure frees the pointer CAPTURED AT
   CONSTRUCTION and only while THIS handle is still the registered
   live graph - a forged or mutated self cannot redirect the free, a
   second call (any argument shape) is a no-op, and a stale closer
@@ -422,7 +431,7 @@
 
 (defn/typed engine-version {:args [] :ret :tuple} []
   "The linked engine version as [major minor patch] (the smoke pins
-  [3 0 2] on the ratified v3.0.2 engine build)."
+  [3 0 2] on the pinned v3.0.2 engine build)."
   [(ray_version_major) (ray_version_minor) (ray_version_patch)])
 
 #==------------------------------------------------------------------------==#
@@ -530,7 +539,7 @@ column back so the per-element lane can tell a null from a band error."
             (or (get TAG-NAMES tag) (string tag)))))
 
 (defn/typed -check-packed {:args [:any] :ret :nil} [packed]
-  "The packed-seam guard (addendum A7.6): a packed f32
+  "The packed-seam guard: a packed f32
   handle is SHAPE-validated - :ptr a buffer or true pointer,
   :nrow/:ncol numbers, the pack's :n/:bytes accounting consistent,
   and the buffer form long enough for the claimed bytes (its reads
@@ -555,7 +564,8 @@ column back so the per-element lane can tell a null from a band error."
             nrow ncol n bytes))
   (when (buffer? (get packed :ptr))
     # the buffer form is bounds-checked by ffi/read, but a short buffer
-    # under a consistent shape reached it as a RAW janet error - check the claimed byte count up front
+    # under a consistent shape would reach it as a RAW janet error -
+    # check the claimed byte count up front
     (unless (>= (length (get packed :ptr)) bytes)
       (errorf "rayforce: packed f32 handle buffer is %d bytes, claims %d"
               (length (get packed :ptr)) bytes))))
@@ -574,6 +584,214 @@ column back so the per-element lane can tell a null from a band error."
   (def flat (if (pos? (* nrow ncol)) (ffi/read @[:float (* nrow ncol)] buf) []))
   (seq [c :range [0 ncol]]
     (seq [r :range [0 nrow]] (flat (+ (* r ncol) c)))))
+
+#==------------------------------------------------------------------------==#
+# janet-num f64 kernel (optional dependency of the packed f64 seam)
+#==------------------------------------------------------------------------==#
+
+# Lib resolution mirrors janet-num's own loader (jennystats/num.janet):
+# $JANET_NUM_LIB, then the pinned ~/.local/lib/janet-num/libjn.so, then
+# the bare soname for the system dlopen search. Resolution is lazy: the
+# rest of this module works without janet-num.
+(defn/typed real-jn-resolver {:args [] :ret :any} []
+  "Resolve libjn.so: $JANET_NUM_LIB, then the pinned home path, then the
+  bare soname for the system dlopen search. Returns the native handle,
+  or nil when no candidate loads."
+  (def env (get (os/environ) "JANET_NUM_LIB"))
+  (def candidates
+    (if env
+      [env]
+      (let [home (get (os/environ) "HOME")
+            pinned (string home "/.local/lib/janet-num/libjn.so")]
+        (if (not (nil? (os/stat pinned))) [pinned] ["libjn.so"]))))
+  (var found nil)
+  (each c candidates
+    (when (nil? found)
+      (set found (try (ffi/native c) ([_] nil)))))
+  found)
+
+(var jn-resolver real-jn-resolver)
+(var jn-resolved false)
+(var jn-kernel nil)
+(var jn-signature nil)
+
+(defn/typed -set-jn-resolver {:args [:any] :ret :nil} [f]
+  "Test seam (internal): install a resolver function, or nil to restore
+  the real chain, and drop the cached resolution so the next call
+  re-resolves. The seam exists so the absent-lib cells fail
+  deterministically instead of depending on the host loader."
+  (set jn-resolver (or f real-jn-resolver))
+  (set jn-resolved false)
+  (set jn-kernel nil)
+  (set jn-signature nil)
+  nil)
+
+(defn/typed -resolve-jn {:args [] :ret :any} []
+  "Lazy resolution of the janet-num kernel: resolve the library, look up
+  jn_deinterleave_f64 with the pinned signature, run the once-per-process
+  self-check, then cache. A failure raises the module class naming the
+  kernel floor and the janet-num installer; the rest of the module keeps
+  working without janet-num."
+  (unless jn-resolved
+    (def lib (jn-resolver))
+    (unless lib
+      (error "rayforce: janet-num libjn could not be resolved - table-from-packed needs janet-num exporting jn_deinterleave_f64; install the janet-num package (jpm install https://github.com/jennystats/janet-num) so libjn.so resolves, or set $JANET_NUM_LIB"))
+    (def kernel (ffi/lookup lib "jn_deinterleave_f64"))
+    (unless kernel
+      (error "rayforce: janet-num libjn does not export jn_deinterleave_f64 - table-from-packed needs janet-num exporting the kernel; install the janet-num package (jpm install https://github.com/jennystats/janet-num) so libjn.so resolves, or set $JANET_NUM_LIB"))
+    (def sig (ffi/signature :default :void :ptr :size :size :ptr))
+    # K5 self-check: one known row through the pinned signature, once per
+    # process at first resolution (per-call would put a redundant probe on
+    # the hot path this seam shaves).
+    (def in (buffer/new-filled 32 0))
+    (ffi/write @[:double 4] @[1.0 2.0 3.0 4.0] in 0)
+    (def ca (buffer/new-filled 16 0))
+    (def cb (buffer/new-filled 16 0))
+    (def ptrs (ffi/write @[:ptr 2] @[ca cb]))
+    (ffi/call kernel sig in 2 2 ptrs)
+    (unless (and (deep= @[1.0 3.0] (ffi/read @[:double 2] ca))
+                 (deep= @[2.0 4.0] (ffi/read @[:double 2] cb)))
+      (error "rayforce: janet-num jn_deinterleave_f64 self-check failed - the loaded kernel does not match the pinned signature (in, ncol, nrow, cols)"))
+    (set jn-kernel kernel)
+    (set jn-signature sig)
+    (set jn-resolved true))
+  jn-kernel)
+
+(defn/typed -check-packed-f64 {:args [:any] :ret :any} [packed]
+  "The packed f64 seam guard (contract A16.1): SHAPE/byte-count
+  validation with f64 accounting - :ptr is a Janet buffer (the GC-owned
+  form janet-num emits; a raw pointer is refused), :nrow and :ncol are
+  positive integral numbers, :n = :nrow x :ncol, :bytes = 8 x :nrow x
+  :ncol, and the buffer is at least :bytes long (a longer tail is
+  ignored). It is NOT provenance-verified: a forged but consistently
+  shaped struct is read as data through its buffer; deeper validation is
+  the caller's (the A7.6 boundary). Returns the validated shape as a
+  snapshot {:ptr :nrow :ncol}: the gather reads the handle ONCE, so a
+  later mutation of it does not reach the kernel."
+  (unless (and (or (struct? packed) (table? packed)) (buffer? (get packed :ptr)))
+    (errorf "rayforce: expected packed f64 handle {:ptr <buffer> :n :bytes :nrow :ncol}, got %s - the f64 seam takes a janet-num pack-columns-f64 handle in its GC-owned buffer form" (type packed)))
+  (def ptr (get packed :ptr))
+  (def nrow (get packed :nrow))
+  (def ncol (get packed :ncol))
+  (def n (get packed :n))
+  (def bytes (get packed :bytes))
+  (unless (and (number? nrow) (number? ncol))
+    (errorf "rayforce: packed f64 handle shape mismatch (nrow %q ncol %q - expected positive integral dimensions, a janet-num pack-columns-f64 handle)" nrow ncol))
+  (when (or (zero? nrow) (zero? ncol))
+    (errorf "rayforce: packed f64 handle has zero length (nrow %q ncol %q) - table-from-packed needs at least one row and one column" nrow ncol))
+  (unless (and (pos? nrow) (pos? ncol)
+               (= nrow (math/floor nrow)) (= ncol (math/floor ncol)))
+    (errorf "rayforce: packed f64 handle shape mismatch (nrow %q ncol %q - expected positive integral dimensions, a janet-num pack-columns-f64 handle)" nrow ncol))
+  (when (and (number? n) (number? bytes)
+             (= n (* nrow ncol)) (= bytes (* 4 nrow ncol)))
+    (errorf "rayforce: packed handle is f32 (4-byte accounting: bytes %q for %q x %q) - table-from-packed takes a janet-num pack-columns-f64 handle" bytes nrow ncol))
+  (unless (and (number? n) (number? bytes)
+               (= n (* nrow ncol)) (= bytes (* 8 nrow ncol)))
+    (errorf "rayforce: packed f64 handle shape mismatch (nrow %q ncol %q n %q bytes %q - expected :n = :nrow x :ncol and :bytes = 8 x :nrow x :ncol)" nrow ncol n bytes))
+  (unless (>= (length ptr) bytes)
+    (errorf "rayforce: packed f64 handle buffer is %d bytes, claims %q - a short buffer is refused" (length ptr) bytes))
+  {:ptr ptr :nrow nrow :ncol ncol})
+
+# Plain defn, not defn/typed: the shape is established by -check-packed-f64
+# (this body's own call when no snapshot is passed), and the second
+# argument exists only to carry that validated snapshot past kernel
+# resolution. See the janet skill, defn/typed cost/benefit rule.
+(defn -packed-f64-columns [packed &opt shape]
+  "Internal gather (contract A16.1): one janet-num pack-columns-f64
+  handle to ncol fresh f64 Janet buffers, in one C deinterleave pass.
+  The kernel never allocates (janet-num kernel ABI); the caller owns
+  every buffer. Copy-on-ingest: the buffers are independent of the
+  handle, which the caller keeps reachable across the call. The handle
+  is read ONCE, by the guard: the optional second argument is the
+  guard's shape snapshot, taken before kernel resolution, so a mutation
+  of the handle after the guard does not reach the kernel (absent
+  snapshot: the guard runs here)."
+  (def shape (or shape (-check-packed-f64 packed)))
+  (def ptr (shape :ptr))
+  (def nrow (shape :nrow))
+  (def ncol (shape :ncol))
+  (def kernel (-resolve-jn))
+  (def bufs (seq [_ :range [0 ncol]] (buffer/new-filled (* 8 nrow) 0)))
+  (def col-ptrs (ffi/write @[:ptr ncol] bufs))
+  (ffi/call kernel jn-signature ptr ncol nrow col-ptrs)
+  bufs)
+
+(var build-fault nil)
+
+(defn/typed -set-build-fault {:args [:any] :ret :nil} [n]
+  "Test seam (internal): raise at column index n inside the
+  table-from-packed build loop so the error-path cleanup is exercised
+  deterministically; nil disables it."
+  (set build-fault n)
+  nil)
+
+(defn table-from-packed
+  "A table handle built directly from one janet-num pack-columns-f64
+  handle (`{:ptr <Janet buffer> :n :bytes :nrow :ncol}`, row-major; the
+  handle's own :free/:close fields are never called). COPY-ON-INGEST
+  (contract A16.1): one C gather pass writes ncol fresh buffers, then one
+  ray_vec_from_raw per column copies each into the engine; after return
+  the table is independent of the packed handle, which may be mutated,
+  dropped or collected. The seam is the SHAPE/byte-count guard with f64
+  accounting: :ptr must be a Janet buffer (the GC-owned form janet-num
+  emits; a raw pointer is refused), :nrow and :ncol positive integrals,
+  :n = :nrow x :ncol, :bytes = 8 x :nrow x :ncol, buffer at least :bytes
+  long (a longer tail is ignored). The handle's shape fields are read
+  ONCE, at guard time: a later mutation of the handle, including one
+  between the guard and the build, does not affect the built table.
+  Optional names follow the
+  table-from-columns constructor rule: absent -> col0..colN-1; present ->
+  ncol unique strings (empty strings accepted). Null/NaN: the pack path
+  carries missing as NaN, the bytes are copied unchanged (NaN in -> NaN
+  out), and the engine's any-NaN predicate decodes it as nil on
+  read-back. The call is not cancellable (bounded work needs bounded
+  handles); janet-num exporting jn_deinterleave_f64 is the dependency."
+  [packed &opt names]
+  (default names nil)
+  # One guard pass; the build loop consumes the snapshot it validated, so
+  # a handle mutated during the call (A16.1) changes nothing.
+  (def shape (-check-packed-f64 packed))
+  (def nrow (shape :nrow))
+  (def ncol (shape :ncol))
+  (def bufs (-packed-f64-columns packed shape))
+  (when names
+    (unless (and (or (array? names) (tuple? names)) (= (length names) ncol))
+      (if (or (array? names) (tuple? names))
+        (errorf "rayforce: table-from-packed: names length (%d) does not match column count (%q)"
+                (length names) ncol)
+        (errorf "rayforce: table-from-packed: names must be an array of %q strings, got %s"
+                ncol (type names))))
+    (each nm names
+      (unless (string? nm)
+        (errorf "rayforce: table-from-packed: names must be strings, got %s" (type nm))))
+    (def seen @{})
+    (each nm names
+      (when (get seen nm)
+        (errorf "rayforce: table-from-packed: duplicate column name %q - table-column resolves the first and table-columns keeps the last; names must be unique" nm))
+      (put seen nm true)))
+  (def ns (or names (seq [i :range [0 ncol]] (string "col" i))))
+  (var t (err! (ray_table_new ncol) "table new"))
+  (var pending nil)
+  (var t-consumed false)
+  (try
+    (do
+      (for i 0 ncol
+        (def nm (ns i))
+        (def vec (err! (ray_vec_from_raw RAY-F64 (bufs i) nrow) (string "column " nm)))
+        (set pending vec)
+        (when (and (number? build-fault) (= i build-fault))
+          (error "rayforce: injected build fault"))
+        (def id (ray_sym_intern nm (length nm)))
+        (set t-consumed true)
+        (set t (err! (ray_table_add_col t id vec) (string "add column " nm)))
+        (set t-consumed false)
+        (set pending nil)
+        (ray_release vec))
+      (err! (ray_table_validate_rectangular t "table-from-packed") "validate rectangular")
+      (make-table t))
+    ([e] (when pending (ray_release pending))
+         (unless t-consumed (ray_release t))
+         (error e))))
 
 (defn table-from-columns
   "A table handle from columns: an array of column arrays (numbers and
@@ -599,7 +817,7 @@ column back so the per-element lane can tell a null from a band error."
       (or (struct? cols) (table? cols))
       (do
         (when names (error "rayforce: names argument alongside struct input - the keys are the names"))
-        # packed-like pre-check (addendum A8.5): a
+        # packed-like pre-check (addendum A9): a
         # map with :ptr but missing :nrow/:ncol previously fell
         # through to this struct branch with a misdirecting
         # container message.
@@ -617,8 +835,8 @@ column back so the per-element lane can tell a null from a band error."
         (seq [p :in (pairs cols)] [(string (first p)) (last p)]))
       (or (array? cols) (tuple? cols))
       (do
-        # the names guard comes BEFORE any pair building: a names array
-        # shorter than cols made map stop at the
+        # the names-count guard comes BEFORE any pair building: a names
+        # array shorter than cols made map stop at the
         # shorter side - columns silently DROPPED, exit 0 (observed:
         # 2 columns + ["a"] -> a 1-column table). The old post-map guard
         # was unreachable (pairs already truncated). Names must match the
@@ -691,6 +909,70 @@ column back so the per-element lane can tell a null from a band error."
         (set pending nil)
         (ray_release vec))
       (err! (ray_table_validate_rectangular t "table-from-columns") "validate rectangular")
+      (make-table t))
+    ([e] (when pending (ray_release pending))
+         (unless t-consumed (ray_release t))
+         (error e))))
+
+(defn/typed -concat-batches {:args [:any] :ret :table} [batches]
+  "One table from parquet reader batches (internal): every batch must
+  carry the same columns in the same order; each column is concatenated
+  engine-side in batch order, so I64, F64 and STR columns are carried
+  without a janet decode. The caller owns the returned handle; the
+  input handles stay caller-owned and open."
+  (unless (and (or (array? batches) (tuple? batches)) (pos? (length batches)))
+    (error "rayforce: -concat-batches: expected a non-empty array of table handles"))
+  (each b batches (check-table b))
+  (def p0 (get (batches 0) :ptr))
+  (def ncols (int/to-number (ray_table_ncols p0)))
+  (when (zero? ncols)
+    (error "rayforce: -concat-batches: the first batch has no columns"))
+  (def total-rows
+    (reduce + 0 (seq [b :in batches]
+                     (int/to-number (ray_table_nrows (get b :ptr))))))
+  (each b batches
+    (def n (int/to-number (ray_table_ncols (get b :ptr))))
+    (unless (= ncols n)
+      (errorf "rayforce: -concat-batches: column count mismatch (%d vs %d)"
+              ncols n)))
+  (for i 0 ncols
+    (def id (int/to-number (ray_table_col_name p0 i)))
+    (each b batches
+      (unless (= id (int/to-number (ray_table_col_name (get b :ptr) i)))
+        (errorf "rayforce: -concat-batches: column %d name mismatch" i))))
+  (var t (err! (ray_table_new ncols) "concat batches: table new"))
+  (var pending nil)
+  (var t-consumed false)
+  (try
+    (do
+      (for i 0 ncols
+        (def id (ray_table_col_name p0 i))
+        (var acc nil)
+        (each b batches
+          (def col (ray_table_get_col_idx (get b :ptr) i))
+          (when (nil? col)
+            (errorf "rayforce: -concat-batches: column %d missing" i))
+          (if (nil? acc)
+            (do (ray_retain col) (set acc col))
+            (do
+              (set pending acc)
+              (def merged (err! (ray_vec_concat acc col)
+                                (string "concat batches: column " i)))
+              (ray_release acc)
+              (set acc merged)))
+          (set pending acc))
+        (set t-consumed true)
+        (set t (err! (ray_table_add_col t id acc)
+                     (string "concat batches: column " i)))
+        (set t-consumed false)
+        (set pending nil)
+        (ray_release acc))
+      (err! (ray_table_validate_rectangular t "concat batches")
+            "concat batches: validate rectangular")
+      (def rows (int/to-number (ray_table_nrows t)))
+      (unless (= total-rows rows)
+        (errorf "rayforce: -concat-batches: row count %d, expected %d"
+                rows total-rows))
       (make-table t))
     ([e] (when pending (ray_release pending))
          (unless t-consumed (ray_release t))
@@ -769,7 +1051,7 @@ column back so the per-element lane can tell a null from a band error."
 (defn/typed table-column {:args [:any :string] :ret :any} [tbl name]
   "The named column as a Janet array (decode per contract section 4),
   or nil when the table has no such column. get_col returns a
-  BORROWED ref (source table.c:211-225 - the census's owned row
+  BORROWED ref (source table.c:382-387 - the census's owned row
   misattributed the header's totality docs; releasing it corrupts the
   heap, observed as a phantom third column in the next build) -
   the copy-out releases nothing."
@@ -825,7 +1107,7 @@ column back so the per-element lane can tell a null from a band error."
 (defn/typed -check-scan-col {:args [:any :string :string] :ret :nil} [tbl-ptr name what]
   "The malformed-plan guard (addendum A8): the
   engine only marks an unknown-column scan OP_FLAG_INVALID_SCAN
-  (ops.h:381) and just the filter/distinct executor surfaces it - a
+  (ops.h:396) and just the filter/distinct executor surfaces it - a
   select projection silently yields an empty or narrowed table
   (observed). The wrapper validates the column against the source
   table before the engine call, so a typo'd projection raises the
@@ -1027,7 +1309,7 @@ column back so the per-element lane can tell a null from a band error."
           g "sort"))
 
 (defn/typed -op-out-type {:args [:any] :ret :any} [op]
-  "The inferred output type of an op (ray_op_t.out_type, ops.h:391 -
+  "The inferred output type of an op (ray_op_t.out_type, ops.h:409 -
   populated at construction: 7 F64, 5 I64, 1 BOOL, 98 TABLE). The
   join-key fence's reason: the engine compares join keys by RAW
   PAYLOAD, so mixed key types silently drop non-zero matches
@@ -1170,7 +1452,7 @@ column back so the per-element lane can tell a null from a band error."
   (make-table result))
 
 #==------------------------------------------------------------------------==#
-# Stress tier (internal - the smoke's leak-counting arm; contract
+# Stress tier (internal - the smoke's leak-counting pass; contract
 # section 12. Not public surface: the defbinds above are importable
 # raw, this helper wraps the trace scope)
 #==------------------------------------------------------------------------==#
@@ -1179,7 +1461,7 @@ column back so the per-element lane can tell a null from a band error."
   "Run a stress cycle inside an engine memory trace; returns
   [net-bytes alloc-count free-count result]. The thunk catches its
   own errors (an escaped error would leave the trace active
-  process-wide - one scope at a time, heap.h:163-165)."
+  process-wide - one scope at a time, heap.h:175-177)."
   (unless (ray_mem_trace_begin)
     (error "rayforce: -trace-net: a trace scope is already active"))
   (def out (buffer/new-filled 48 0))

@@ -17,6 +17,7 @@ carry `:close`.
 ```
 (engine-version)                      -> (major minor patch) ints
 (table-from-columns cols &opt names)  -> table handle
+(table-from-packed packed &opt names) -> table handle
 (table-nrows tbl)                     -> int
 (table-ncols tbl)                     -> int
 (table-column tbl name)               -> array of values | nil (no such column)
@@ -43,9 +44,8 @@ carry `:close`.
 
 - `table-from-columns`: `cols` is an array of column arrays or a
   struct of name -> array, or a janet-num packed f32 handle (`:ptr`
-  buffer or pointer form, both accepted - the provenance guard
-  [name superseded by A12.2: the seam is a SHAPE/byte-count guard,
-  not a provenance check - A7.6]);
+  buffer or pointer form, both accepted - the shape/byte-count guard
+  (A7.6, A12.2 - no provenance element));
   f32 columns widen to f64, lossless. All columns must be equal
   length - the guard raises on ragged input (the engine accepts
   ragged adds silently; the wrapper does not pass them through).
@@ -71,7 +71,9 @@ carry `:close`.
   `:inner`. `head`/`tail` n is clamped to row count.
 - `parquet-rows`: `batch` is the reader's `batch_rows` (default 65536;
   must be 1..65536 - 0 raises). Returns ALL batches as an array of
-  table handles; the reader is closed before returning.
+  table handles; the reader is closed before returning. A parquet
+  file with zero rows yields one batch table of zero rows carrying
+  the file's columns; it is not an empty array.
 - Aggregation ops in `group`: `:sum :avg :min :max :count
   :count-distinct :first :last :stddev :var` (the v1 opcode
   set; the full agg registry is a later slice).
@@ -115,7 +117,11 @@ never the handle it passed.
   engine error objects.
 - Parquet schema rejection, exact text:
   `unsupported or malformed schema (only flat primitive columns are
-  supported)` - DECIMAL and any nested column raise this at open. The
+  supported)` - DECIMAL and any nested column raise this at open. A
+  DECIMAL column is refused with the engine's flat-primitive text
+  ('unsupported or malformed schema (only flat primitive columns are
+  supported)'); a nested schema is refused at the footer ('invalid
+  Parquet footer'). Both are the module error class. The
   write-side discipline (cast to `::DOUBLE`, flat columns) is
   janet-duckdb's contract note.
 - Malformed plans (scanning a column a table does not have, projecting
@@ -188,8 +194,8 @@ its own type name.]
   Using an op after its graph closed is the same UB class as
   close-then-use on a handle.
 - The janet-num seam: packed f32 handles are accepted in buffer or
-  `:ptr` form through the same provenance guard the published modules
-  use - a plain buffer that is not a packed handle raises the guard
+  `:ptr` form through the same shape/byte-count guard the published
+  modules use - a plain buffer that is not a packed handle raises the guard
   error, never a raw pointer read. [Superseded in part by A7.6/A12.2:
   the seam is SHAPE-validated, not provenance-verified - a forged but
   consistently-shaped struct's pointer form is read as data through
@@ -717,7 +723,7 @@ below.
   rationale: in-process code can
   call the `ray_*` ffi directly and forge pointers, so no Janet-level
   guard can bind a hostile in-process caller; the guards bind MISUSE at
-  the API surface, and the honest contract says exactly that. Each
+  the API surface, and the contract states exactly that. Each
   earlier fence (the v2 token, the v3 copy, the v4 destructor) was
   a contract overclaiming its implementation; this row ends
   the cycle by stating the boundary the implementation verifiably
@@ -757,8 +763,9 @@ pinned by regression checks in the smoke suite.
   sections 1 and 6 called the packed seam "the provenance guard";
   the seam has no provenance element (A7.6 superseded the v1.0
   wording, but the name survived in two places). Both sites now name
-  it a shape/byte-count guard. Rides with A12.4's scope fix on the
-  same section-6 sentence.
+  it a shape/byte-count guard; the sites were bracket-annotated in
+  v1.0.1 through v1.0.6; v1.0.7 renames them. Rides with A12.4's
+  scope fix on the same section-6 sentence.
 - **A12.3 handles are tables (section 6)**: section 6's
   "are structs" was the
   contradiction A10.2 resolved, left
@@ -957,6 +964,84 @@ No contract row changed.
   janet-query rayforce smokes and the query suites pass on v3.0.2.
 
 This addendum row set is the v1.0.4 contract state.
+
+## Addendum v1.0.5 (2026-11-09, packed f64 table-build seam)
+
+- **A16.1 `table-from-packed` (section 1 surface).** A table handle built
+  directly from one janet-num packed f64 handle (`pack-columns-f64`: `{:ptr
+  <Janet buffer> :n :bytes :nrow :ncol}`, plus the handle's own
+  `:free`/`:close` fields, which the seam never calls; row-major).
+  COPY-ON-INGEST: each engine column owns a copy of the bytes; after return
+  the table is independent of the packed handle, which may be mutated,
+  dropped or collected. The bytes reach the engine column through two
+  copies: the gather writes fresh Janet buffers (one deinterleave pass)
+  and `ray_vec_from_raw` copies each buffer into the engine column
+  (`memcpy` at construction). No engine column ever points into the
+  handle's buffer, so the independence sentence above holds by
+  construction, not by convention. The seam is the SHAPE/BYTE-COUNT guard (A7.6/A12.2)
+  with f64 accounting: `:ptr` must be a Janet buffer (the GC-owned form
+  janet-num emits; a raw `:ptr` is refused because a non-GC pointer cannot
+  establish the copy-on-ingest ownership predicate), `:nrow` and `:ncol` are
+  positive INTEGRAL numbers, `:n = :nrow x :ncol`, `:bytes = 8 x :nrow x
+  :ncol`, and the buffer at least `:bytes` long (the kernel reads exactly
+  `:bytes`; a longer buffer's tail is ignored, intended). Refusals are the
+  module error class: non-handle, f32 handle (4-byte accounting), zero
+  length, non-integral or negative dimension, inconsistent accounting, short
+  buffer. `names` follows the constructor rule: absent -> `col0..colN-1`;
+  present -> equal-length unique strings (empty strings accepted, as array
+  input), else the type-guard class. An empty string is accepted as a
+  name; two identical names are duplicates and refused. The handle remains wholly the caller's:
+  the seam does not call its `:close` or `:free`. There is no interrupt
+  checkpoint; the call is not cancellable, so bounded work needs bounded
+  handles. Dependency: janet-num exporting `jn_deinterleave_f64` with the
+  pinned signature. Not provided: provenance verification (A7.6), a null
+  bitmap (#38), egress or a zero-copy view, types beyond f64. Null/NaN: the
+  pack path carries missing as NaN; the seam copies f64 bit patterns
+  unchanged (NaN in -> NaN out), and the engine's any-NaN read predicate
+  decodes it as nil on read-back. A refusal returns no table and does not
+  modify the source buffer.
+
+This addendum row set is the v1.0.5 contract state.
+
+## Addendum v1.0.6 (2026-11-09, the addendum's fix verification round - guard-time snapshot)
+
+- **A16.1 `table-from-packed`: the handle is read once.** The handle's
+  shape fields are read ONCE at guard time; later mutation of the handle
+  (including between the guard and the build) does not affect the built
+  table. The gather's kernel arguments and the build loop's row and column
+  counts are the values the guard validated, not a second read of the
+  caller's handle. No other A16.1 text changes: the refusals, names rule,
+  copy-on-ingest semantics, NaN mapping and dependency are as stated in
+  v1.0.5.
+
+## Addendum v1.0.7 (2026-11-10, publication reconciliation - wording)
+
+Wording only; no row semantics move, no row renumbered.
+
+- **A16.1 copy chain (section 1 surface, lands in the v1.0.5 row).**
+  Appended to that row's COPY-ON-INGEST sentence: the bytes reach the
+  engine column through two copies - the gather writes fresh Janet
+  buffers (one deinterleave pass) and `ray_vec_from_raw` copies each
+  buffer into the engine column (`memcpy` at construction); no engine
+  column ever points into the handle's buffer, so the independence
+  sentence holds by construction, not by convention.
+- **A16.1 names clause (section 1 surface, lands in the v1.0.5 row).**
+  Appended: an empty string is accepted as a name; two identical names
+  are duplicates and refused.
+- **D-1 the guard name at both sites (sections 1 and 6, A12.2).**
+  Section 1's `table-from-columns` row and section 6's janet-num seam
+  row now say "shape/byte-count guard" (A7.6, A12.2 - no provenance
+  element); the supersession brackets and A12.2's rename claim are
+  re-worded to match what the sites now say.
+- **A14.1 zero-row shape (section 1 surface).** A parquet file with
+  zero rows yields one batch table of zero rows carrying the file's
+  columns; it is not an empty array.
+- **A14.1 schema-rejection texts (section 3).** A DECIMAL column is
+  refused with the engine's flat-primitive text; a nested schema is
+  refused at the footer ('invalid Parquet footer'); both are the module
+  error class.
+
+This addendum row set is the v1.0.7 contract state.
 
 ## Sources
 
